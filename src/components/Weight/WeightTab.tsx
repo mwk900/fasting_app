@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { format } from 'date-fns'
+import { useState, useEffect, useMemo } from 'react'
+import { format, subDays } from 'date-fns'
 import { supabase } from '../../lib/supabase'
 import type { WeightLog } from '../../types'
 import {
@@ -10,13 +10,30 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
+  Brush,
+  ReferenceArea,
 } from 'recharts'
+
+type RangeKey = '14d' | '30d' | '90d' | 'all'
+const RANGES: { key: RangeKey; label: string; days: number | null }[] = [
+  { key: '14d', label: '14D', days: 14 },
+  { key: '30d', label: '30D', days: 30 },
+  { key: '90d', label: '90D', days: 90 },
+  { key: 'all', label: 'All', days: null },
+]
 
 export default function WeightTab() {
   const [entries, setEntries] = useState<WeightLog[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [range, setRange] = useState<RangeKey>('14d')
+
+  // drag-to-zoom state
+  const [zoomLeft, setZoomLeft] = useState<string | null>(null)
+  const [zoomRight, setZoomRight] = useState<string | null>(null)
+  const [zoomStart, setZoomStart] = useState<number | null>(null)
+  const [zoomEnd, setZoomEnd] = useState<number | null>(null)
 
   const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'))
   const [weight, setWeight] = useState('')
@@ -56,10 +73,62 @@ export default function WeightTab() {
     fetchEntries()
   }
 
-  const chartData = entries.map((e) => ({
-    date: format(new Date(e.logged_date), 'd MMM'),
-    weight_kg: e.weight_kg,
-  }))
+  const chartData = useMemo(
+    () =>
+      entries.map((e) => ({
+        date: format(new Date(e.logged_date), 'd MMM'),
+        fullDate: e.logged_date,
+        weight_kg: e.weight_kg,
+        notes: e.notes,
+      })),
+    [entries],
+  )
+
+  // Compute the default brush indices based on the selected range
+  const { brushStart, brushEnd } = useMemo(() => {
+    if (chartData.length === 0) return { brushStart: 0, brushEnd: 0 }
+    const end = chartData.length - 1
+    if (range === 'all') return { brushStart: 0, brushEnd: end }
+
+    const days = RANGES.find((r) => r.key === range)!.days!
+    const cutoff = format(subDays(new Date(), days), 'yyyy-MM-dd')
+    let start = chartData.findIndex((d) => d.fullDate >= cutoff)
+    if (start < 0) start = 0
+    return { brushStart: start, brushEnd: end }
+  }, [chartData, range])
+
+  // Custom zoomed view via drag
+  const visibleData = useMemo(() => {
+    if (zoomStart !== null && zoomEnd !== null) {
+      const lo = Math.min(zoomStart, zoomEnd)
+      const hi = Math.max(zoomStart, zoomEnd)
+      return chartData.slice(lo, hi + 1)
+    }
+    return null
+  }, [chartData, zoomStart, zoomEnd])
+
+  const displayData = visibleData ?? chartData
+
+  function handleZoomSelect() {
+    if (!zoomLeft || !zoomRight || zoomLeft === zoomRight) {
+      setZoomLeft(null)
+      setZoomRight(null)
+      return
+    }
+    const li = chartData.findIndex((d) => d.date === zoomLeft)
+    const ri = chartData.findIndex((d) => d.date === zoomRight)
+    if (li >= 0 && ri >= 0) {
+      setZoomStart(Math.min(li, ri))
+      setZoomEnd(Math.max(li, ri))
+    }
+    setZoomLeft(null)
+    setZoomRight(null)
+  }
+
+  function resetZoom() {
+    setZoomStart(null)
+    setZoomEnd(null)
+  }
 
   if (loading) {
     return (
@@ -124,42 +193,129 @@ export default function WeightTab() {
         {entries.length === 0 ? (
           <p className="py-12 text-center text-muted">No weight entries yet.</p>
         ) : (
-          <ResponsiveContainer width="100%" height={280}>
-            <LineChart data={chartData} margin={{ top: 5, right: 10, left: -10, bottom: 5 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--color-chart-grid)" vertical={false} />
-              <XAxis
-                dataKey="date"
-                stroke="var(--color-chart-axis)"
-                tick={{ fontSize: 11, fill: 'var(--color-chart-tick)' }}
-                tickLine={false}
-                axisLine={false}
-              />
-              <YAxis
-                stroke="var(--color-chart-axis)"
-                tick={{ fontSize: 11, fill: 'var(--color-chart-tick)' }}
-                tickLine={false}
-                axisLine={false}
-                domain={['dataMin - 1', 'dataMax + 1']}
-              />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: 'var(--color-tooltip-bg)',
-                  border: '1px solid var(--color-tooltip-border)',
-                  borderRadius: '8px',
-                  color: 'var(--color-fg)',
-                  fontSize: '13px',
+          <>
+            {/* Range buttons + reset zoom */}
+            <div className="mb-3 flex items-center gap-2">
+              {RANGES.map((r) => (
+                <button
+                  key={r.key}
+                  onClick={() => { setRange(r.key); resetZoom() }}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    range === r.key && zoomStart === null
+                      ? 'bg-teal text-bg'
+                      : 'bg-card text-secondary border border-card-border hover:text-fg'
+                  }`}
+                >
+                  {r.label}
+                </button>
+              ))}
+              {zoomStart !== null && (
+                <button
+                  onClick={resetZoom}
+                  className="ml-auto rounded-lg border border-card-border bg-card px-3 py-1.5 text-xs font-semibold text-secondary hover:text-fg transition-colors"
+                >
+                  Reset zoom
+                </button>
+              )}
+            </div>
+
+            {/* Tip */}
+            {zoomStart === null && (
+              <p className="mb-2 text-[11px] text-dim">Drag on chart to zoom in. Use slider below to pan.</p>
+            )}
+
+            <ResponsiveContainer width="100%" height={300}>
+              <LineChart
+                data={displayData}
+                margin={{ top: 5, right: 10, left: -10, bottom: 5 }}
+                onMouseDown={(e: any) => {
+                  if (e?.activeLabel) setZoomLeft(e.activeLabel)
                 }}
-              />
-              <Line
-                type="monotone"
-                dataKey="weight_kg"
-                stroke="#00D4C8"
-                strokeWidth={2}
-                dot={{ fill: '#00D4C8', r: 3 }}
-                activeDot={{ r: 5, fill: '#00D4C8' }}
-              />
-            </LineChart>
-          </ResponsiveContainer>
+                onMouseMove={(e: any) => {
+                  if (zoomLeft && e?.activeLabel) setZoomRight(e.activeLabel)
+                }}
+                onMouseUp={handleZoomSelect}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-chart-grid)" vertical={false} />
+                <XAxis
+                  dataKey="date"
+                  stroke="var(--color-chart-axis)"
+                  tick={{ fontSize: 11, fill: 'var(--color-chart-tick)' }}
+                  tickLine={false}
+                  axisLine={false}
+                />
+                <YAxis
+                  stroke="var(--color-chart-axis)"
+                  tick={{ fontSize: 11, fill: 'var(--color-chart-tick)' }}
+                  tickLine={false}
+                  axisLine={false}
+                  domain={['dataMin - 0.5', 'dataMax + 0.5']}
+                />
+                <Tooltip
+                  content={({ active, payload }) => {
+                    if (!active || !payload?.length) return null
+                    const d = payload[0].payload
+                    return (
+                      <div
+                        style={{
+                          backgroundColor: 'var(--color-tooltip-bg)',
+                          border: '1px solid var(--color-tooltip-border)',
+                          borderRadius: '8px',
+                          color: 'var(--color-fg)',
+                          fontSize: '13px',
+                          padding: '8px 12px',
+                        }}
+                      >
+                        <p className="font-semibold">{d.weight_kg} kg</p>
+                        <p className="text-xs text-secondary">{d.fullDate}</p>
+                        {d.notes && <p className="mt-1 text-xs text-dim">{d.notes}</p>}
+                      </div>
+                    )
+                  }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="weight_kg"
+                  stroke="#00D4C8"
+                  strokeWidth={2}
+                  dot={{ fill: '#00D4C8', r: 3 }}
+                  activeDot={{ r: 5, fill: '#00D4C8' }}
+                />
+                {/* Drag-to-zoom highlight */}
+                {zoomLeft && zoomRight && (
+                  <ReferenceArea
+                    x1={zoomLeft}
+                    x2={zoomRight}
+                    strokeOpacity={0.3}
+                    fill="#00D4C8"
+                    fillOpacity={0.15}
+                  />
+                )}
+                {/* Brush slider — only when not in custom zoom */}
+                {zoomStart === null && (
+                  <Brush
+                    dataKey="date"
+                    height={30}
+                    stroke="#00D4C8"
+                    fill="var(--color-card, #1a1a2e)"
+                    travellerWidth={10}
+                    startIndex={brushStart}
+                    endIndex={brushEnd}
+                  >
+                    <LineChart data={chartData}>
+                      <Line
+                        type="monotone"
+                        dataKey="weight_kg"
+                        stroke="#00D4C8"
+                        strokeWidth={1}
+                        dot={false}
+                      />
+                    </LineChart>
+                  </Brush>
+                )}
+              </LineChart>
+            </ResponsiveContainer>
+          </>
         )}
       </div>
     </div>
