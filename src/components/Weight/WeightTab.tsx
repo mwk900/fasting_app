@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { format, subDays } from 'date-fns'
 import { supabase } from '../../lib/supabase'
+import { useAuth } from '../../lib/auth'
 import type { WeightLog } from '../../types'
 import {
   ResponsiveContainer,
@@ -23,6 +24,7 @@ const RANGES: { key: RangeKey; label: string; days: number | null }[] = [
 ]
 
 export default function WeightTab() {
+  const { user } = useAuth()
   const [entries, setEntries] = useState<WeightLog[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -61,6 +63,7 @@ export default function WeightTab() {
     setError(null)
 
     const { error: err } = await supabase.from('weight_log').insert({
+      user_id: user!.id,
       logged_date: date,
       weight_kg: parseFloat(weight),
       notes: notes || null,

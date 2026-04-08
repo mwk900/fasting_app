@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { format } from 'date-fns'
 import { supabase } from '../../lib/supabase'
+import { useAuth } from '../../lib/auth'
 import type { Measurement } from '../../types'
 
 const FIELDS: { key: keyof Measurement; label: string; unit: string }[] = [
@@ -16,6 +17,7 @@ const FIELDS: { key: keyof Measurement; label: string; unit: string }[] = [
 ]
 
 export default function MeasurementsTab() {
+  const { user } = useAuth()
   const [entries, setEntries] = useState<Measurement[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -55,6 +57,7 @@ export default function MeasurementsTab() {
       row[f.key] = v ? parseFloat(v) : null
     }
 
+    row.user_id = user!.id
     const { error: err } = await supabase.from('measurements').insert(row)
     if (err) { setError('Failed to save measurement'); setSaving(false); return }
 

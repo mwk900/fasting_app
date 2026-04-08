@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
+import { useAuth } from './lib/auth'
+import LoginPage from './components/Auth/LoginPage'
 import TabBar from './components/TabBar'
 import TimerTab from './components/Timer/TimerTab'
 import HistoryTab from './components/History/HistoryTab'
@@ -10,6 +12,7 @@ export type Tab = 'timer' | 'history' | 'weight' | 'measurements'
 export type Theme = 'dark' | 'light'
 
 export default function App() {
+  const { user, loading: authLoading, signOut } = useAuth()
   const [activeTab, setActiveTab] = useState<Tab>('timer')
   const [theme, setTheme] = useState<Theme>(() => {
     return (localStorage.getItem('theme') as Theme) || 'dark'
@@ -22,6 +25,16 @@ export default function App() {
 
   const toggleTheme = () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))
 
+  if (authLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-bg">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-teal border-t-transparent" />
+      </div>
+    )
+  }
+
+  if (!user) return <LoginPage />
+
   const tabs: Record<Tab, React.ReactNode> = {
     timer: <TimerTab />,
     history: <HistoryTab />,
@@ -31,11 +44,18 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-bg font-sans transition-colors duration-300">
-      <button
-        onClick={toggleTheme}
-        className="fixed right-4 top-4 z-30 rounded-full bg-card p-2.5 text-muted shadow-lg border border-card-border transition-colors hover:text-fg"
-        aria-label="Toggle theme"
-      >
+      <div className="fixed right-4 top-4 z-30 flex items-center gap-2">
+        <button
+          onClick={signOut}
+          className="rounded-full bg-card px-3 py-2 text-xs font-medium text-muted shadow-lg border border-card-border transition-colors hover:text-fg"
+        >
+          Sign out
+        </button>
+        <button
+          onClick={toggleTheme}
+          className="rounded-full bg-card p-2.5 text-muted shadow-lg border border-card-border transition-colors hover:text-fg"
+          aria-label="Toggle theme"
+        >
         {theme === 'dark' ? (
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="5" />
@@ -54,6 +74,7 @@ export default function App() {
           </svg>
         )}
       </button>
+      </div>
 
       <main className="mx-auto max-w-lg px-4 pb-24 pt-6">
         <AnimatePresence mode="wait">

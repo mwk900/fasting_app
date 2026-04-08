@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { format } from 'date-fns'
 import { supabase } from '../../lib/supabase'
+import { useAuth } from '../../lib/auth'
 import type { ActiveFast, Fast } from '../../types'
 import {
   getStageForHour,
@@ -117,6 +118,7 @@ function Section({ title, open, onToggle, children }: SectionProps) {
 }
 
 export default function TimerTab() {
+  const { user } = useAuth()
   const [activeFast, setActiveFast] = useState<ActiveFast | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -163,7 +165,7 @@ export default function TimerTab() {
     const { data, error: err } = await supabase
       .from('active_fast')
       .select('*')
-      .eq('id', 1)
+      .eq('user_id', user!.id)
       .single()
     if (err && err.code !== 'PGRST116') setError('Failed to load timer state')
     if (data) setActiveFast(data)
@@ -185,7 +187,7 @@ export default function TimerTab() {
     const now = new Date().toISOString()
     const { data, error: err } = await supabase
       .from('active_fast')
-      .upsert({ id: 1, start_time: now, is_active: true })
+      .upsert({ user_id: user!.id, start_time: now, is_active: true }, { onConflict: 'user_id' })
       .select()
       .single()
     if (err) {
@@ -203,6 +205,7 @@ export default function TimerTab() {
     const durationMinutes = Math.floor(elapsed / 60)
 
     const { error: insertErr } = await supabase.from('fasts').insert({
+      user_id: user!.id,
       start_time: activeFast.start_time,
       end_time: endTime,
       duration_minutes: durationMinutes,
@@ -217,7 +220,7 @@ export default function TimerTab() {
 
     const { error: updateErr } = await supabase
       .from('active_fast')
-      .upsert({ id: 1, start_time: null, is_active: false })
+      .upsert({ user_id: user!.id, start_time: null, is_active: false }, { onConflict: 'user_id' })
 
     if (updateErr) {
       setError('Failed to reset timer')
