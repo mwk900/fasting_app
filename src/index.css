@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-bg: #0a0a0a;
+  --color-fg: #f0f0f0;
+  --color-card: #141414;
+  --color-card-border: #222222;
+  --color-secondary: #a3a3a3;
+  --color-muted: #737373;
+  --color-dim: #525252;
+  --color-chart-grid: #222;
+  --color-chart-axis: #555;
+  --color-chart-tick: #666;
+  --color-tooltip-bg: #1a1a1a;
+  --color-tooltip-border: #333;
+}
+
+[data-theme='light'] {
+  --color-bg: #f5f5f5;
+  --color-fg: #111111;
+  --color-card: #ffffff;
+  --color-card-border: #e0e0e0;
+  --color-secondary: #525252;
+  --color-muted: #737373;
+  --color-dim: #a3a3a3;
+  --color-chart-grid: #e0e0e0;
+  --color-chart-axis: #aaa;
+  --color-chart-tick: #888;
+  --color-tooltip-bg: #ffffff;
+  --color-tooltip-border: #e0e0e0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color 0.3s, color 0.3s;
+}
+
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type='number'] {
+  -moz-appearance: textfield;
+}
