@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo } from 'react'
-import { format, subDays } from 'date-fns'
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
+import { format, subDays, parseISO } from 'date-fns'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../lib/auth'
 import type { WeightLog } from '../../types'
@@ -12,7 +12,6 @@ import {
   CartesianGrid,
   Tooltip,
   Brush,
-  ReferenceArea,
 } from 'recharts'
 
 type RangeKey = '14d' | '30d' | '90d' | 'all'
@@ -23,6 +22,16 @@ const RANGES: { key: RangeKey; label: string; days: number | null }[] = [
   { key: 'all', label: 'All', days: null },
 ]
 
+/** Pick a visually pleasant tick step for the given data span */
+function niceStep(span: number): number {
+  if (span <= 1) return 0.2
+  if (span <= 3) return 0.5
+  if (span <= 8) return 1
+  if (span <= 20) return 2
+  if (span <= 50) return 5
+  return 10
+}
+
 export default function WeightTab() {
   const { user } = useAuth()
   const [entries, setEntries] = useState<WeightLog[]>([])
@@ -31,25 +40,27 @@ export default function WeightTab() {
   const [saving, setSaving] = useState(false)
   const [range, setRange] = useState<RangeKey>('14d')
 
-  // drag-to-zoom state
-  const [zoomLeft, setZoomLeft] = useState<string | null>(null)
-  const [zoomRight, setZoomRight] = useState<string | null>(null)
-  const [zoomStart, setZoomStart] = useState<number | null>(null)
-  const [zoomEnd, setZoomEnd] = useState<number | null>(null)
+  // Visible window [startIdx, endIdx] into chartData. null → derive from range.
+  const [activeWindow, setActiveWindow] = useState<[number, number] | null>(null)
+
+  const [deletingId, setDeletingId] = useState<number | null>(null)
 
   const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'))
   const [weight, setWeight] = useState('')
   const [notes, setNotes] = useState('')
 
+  const chartContainerRef = useRef<HTMLDivElement>(null)
+
   useEffect(() => {
-    fetchEntries()
-  }, [])
+    if (user) fetchEntries()
+  }, [user])
 
   async function fetchEntries() {
     setError(null)
     const { data, error: err } = await supabase
       .from('weight_log')
       .select('*')
+      .eq('user_id', user!.id)
       .order('logged_date', { ascending: true })
     if (err) { setError('Failed to load weight data'); setLoading(false); return }
     setEntries(data ?? [])
@@ -76,10 +87,18 @@ export default function WeightTab() {
     fetchEntries()
   }
 
+  async function deleteEntry(id: number) {
+    setError(null)
+    const { error: err } = await supabase.from('weight_log').delete().eq('id', id)
+    if (err) { setError('Failed to delete entry'); return }
+    setEntries((prev) => prev.filter((e) => e.id !== id))
+    setDeletingId(null)
+  }
+
   const chartData = useMemo(
     () =>
       entries.map((e) => ({
-        date: format(new Date(e.logged_date), 'd MMM'),
+        date: format(parseISO(e.logged_date), 'dd/MM'),
         fullDate: e.logged_date,
         weight_kg: e.weight_kg,
         notes: e.notes,
@@ -87,51 +106,96 @@ export default function WeightTab() {
     [entries],
   )
 
-  // Compute the default brush indices based on the selected range
-  const { brushStart, brushEnd } = useMemo(() => {
-    if (chartData.length === 0) return { brushStart: 0, brushEnd: 0 }
+  // Default window derived from the range selector
+  const defaultWindow = useMemo<[number, number]>(() => {
+    if (chartData.length === 0) return [0, 0]
     const end = chartData.length - 1
-    if (range === 'all') return { brushStart: 0, brushEnd: end }
-
+    if (range === 'all') return [0, end]
     const days = RANGES.find((r) => r.key === range)!.days!
     const cutoff = format(subDays(new Date(), days), 'yyyy-MM-dd')
     let start = chartData.findIndex((d) => d.fullDate >= cutoff)
     if (start < 0) start = 0
-    return { brushStart: start, brushEnd: end }
+    return [start, end]
   }, [chartData, range])
 
-  // Custom zoomed view via drag
-  const visibleData = useMemo(() => {
-    if (zoomStart !== null && zoomEnd !== null) {
-      const lo = Math.min(zoomStart, zoomEnd)
-      const hi = Math.max(zoomStart, zoomEnd)
-      return chartData.slice(lo, hi + 1)
-    }
-    return null
-  }, [chartData, zoomStart, zoomEnd])
+  const [viewStart, viewEnd] = activeWindow ?? defaultWindow
 
-  const displayData = visibleData ?? chartData
+  // Data in the current view (for Y-axis computation)
+  const visibleSlice = useMemo(
+    () => chartData.slice(viewStart, viewEnd + 1),
+    [chartData, viewStart, viewEnd],
+  )
 
-  function handleZoomSelect() {
-    if (!zoomLeft || !zoomRight || zoomLeft === zoomRight) {
-      setZoomLeft(null)
-      setZoomRight(null)
-      return
-    }
-    const li = chartData.findIndex((d) => d.date === zoomLeft)
-    const ri = chartData.findIndex((d) => d.date === zoomRight)
-    if (li >= 0 && ri >= 0) {
-      setZoomStart(Math.min(li, ri))
-      setZoomEnd(Math.max(li, ri))
-    }
-    setZoomLeft(null)
-    setZoomRight(null)
-  }
+  // Compute Y-axis domain and explicit ticks from visible data
+  const { yDomain, yTicks, yStep } = useMemo(() => {
+    if (visibleSlice.length === 0)
+      return { yDomain: [0, 100] as [number, number], yTicks: [] as number[], yStep: 10 }
 
-  function resetZoom() {
-    setZoomStart(null)
-    setZoomEnd(null)
-  }
+    const weights = visibleSlice.map((d) => d.weight_kg)
+    const min = Math.min(...weights)
+    const max = Math.max(...weights)
+    const span = max - min || 0.5
+    const step = niceStep(span)
+
+    const lo = parseFloat((Math.floor((min - step * 0.5) / step) * step).toFixed(1))
+    const hi = parseFloat((Math.ceil((max + step * 0.5) / step) * step).toFixed(1))
+
+    const ticks: number[] = []
+    for (let v = lo; v <= hi + step * 0.001; v += step) {
+      ticks.push(parseFloat(v.toFixed(1)))
+    }
+
+    return { yDomain: [lo, hi] as [number, number], yTicks: ticks, yStep: step }
+  }, [visibleSlice])
+
+  // Brush onChange → keep window in sync
+  const handleBrushChange = useCallback(
+    (brushRange: { startIndex?: number; endIndex?: number }) => {
+      if (brushRange.startIndex != null && brushRange.endIndex != null) {
+        const s = brushRange.startIndex
+        const e = brushRange.endIndex
+        setActiveWindow((prev) => {
+          if (prev && prev[0] === s && prev[1] === e) return prev
+          return [s, e]
+        })
+      }
+    },
+    [],
+  )
+
+  // Wheel zoom: scroll up → zoom in, scroll down → zoom out (TradingView-style)
+  useEffect(() => {
+    const el = chartContainerRef.current
+    if (!el || chartData.length < 3) return
+
+    function handleWheel(e: WheelEvent) {
+      e.preventDefault()
+      const total = chartData.length
+      const size = viewEnd - viewStart
+
+      // ~12% of current window per scroll tick
+      const zoomAmount = Math.max(1, Math.round(size * 0.12))
+      const delta = e.deltaY > 0 ? zoomAmount : -zoomAmount
+
+      let newStart = viewStart - delta
+      let newEnd = viewEnd + delta
+
+      // Minimum 3 data points visible
+      if (newEnd - newStart < 3) {
+        const center = Math.round((viewStart + viewEnd) / 2)
+        newStart = center - 1
+        newEnd = center + 1
+      }
+
+      newStart = Math.max(0, newStart)
+      newEnd = Math.min(total - 1, newEnd)
+
+      setActiveWindow([newStart, newEnd])
+    }
+
+    el.addEventListener('wheel', handleWheel, { passive: false })
+    return () => el.removeEventListener('wheel', handleWheel)
+  }, [chartData.length, viewStart, viewEnd])
 
   if (loading) {
     return (
@@ -140,6 +204,8 @@ export default function WeightTab() {
       </div>
     )
   }
+
+  const isCustomWindow = activeWindow !== null
 
   return (
     <div>
@@ -151,16 +217,16 @@ export default function WeightTab() {
 
       <form onSubmit={handleSave} className="space-y-3 rounded-xl border border-card-border bg-card p-4">
         <div className="grid grid-cols-2 gap-3">
-          <div>
+          <div className="min-w-0">
             <label className="mb-1 block text-xs font-medium text-secondary">Date</label>
             <input
               type="date"
               value={date}
               onChange={(e) => setDate(e.target.value)}
-              className="w-full rounded-lg border border-card-border bg-bg px-3 py-2.5 text-sm text-fg outline-none focus:border-teal focus:ring-1 focus:ring-teal"
+              className="w-full max-w-full rounded-lg border border-card-border bg-bg px-3 py-2.5 text-sm text-fg outline-none focus:border-teal focus:ring-1 focus:ring-teal"
             />
           </div>
-          <div>
+          <div className="min-w-0">
             <label className="mb-1 block text-xs font-medium text-secondary">Weight (kg)</label>
             <input
               type="number"
@@ -169,7 +235,7 @@ export default function WeightTab() {
               onChange={(e) => setWeight(e.target.value)}
               placeholder="82.5"
               required
-              className="w-full rounded-lg border border-card-border bg-bg px-3 py-2.5 text-sm text-fg placeholder-dim outline-none focus:border-teal focus:ring-1 focus:ring-teal"
+              className="w-full max-w-full rounded-lg border border-card-border bg-bg px-3 py-2.5 text-sm text-fg placeholder-dim outline-none focus:border-teal focus:ring-1 focus:ring-teal"
             />
           </div>
         </div>
@@ -188,7 +254,7 @@ export default function WeightTab() {
           disabled={saving || !weight}
           className="w-full rounded-lg bg-teal px-4 py-2.5 text-sm font-semibold text-bg transition-opacity hover:opacity-90 disabled:opacity-50"
         >
-          {saving ? 'Saving…' : 'Save'}
+          {saving ? 'Saving\u2026' : 'Save'}
         </button>
       </form>
 
@@ -197,14 +263,14 @@ export default function WeightTab() {
           <p className="py-12 text-center text-muted">No weight entries yet.</p>
         ) : (
           <>
-            {/* Range buttons + reset zoom */}
+            {/* Range buttons + reset */}
             <div className="mb-3 flex items-center gap-2">
               {RANGES.map((r) => (
                 <button
                   key={r.key}
-                  onClick={() => { setRange(r.key); resetZoom() }}
+                  onClick={() => { setRange(r.key); setActiveWindow(null) }}
                   className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
-                    range === r.key && zoomStart === null
+                    range === r.key && !isCustomWindow
                       ? 'bg-teal text-bg'
                       : 'bg-card text-secondary border border-card-border hover:text-fg'
                   }`}
@@ -212,98 +278,85 @@ export default function WeightTab() {
                   {r.label}
                 </button>
               ))}
-              {zoomStart !== null && (
+              {isCustomWindow && (
                 <button
-                  onClick={resetZoom}
+                  onClick={() => setActiveWindow(null)}
                   className="ml-auto rounded-lg border border-card-border bg-card px-3 py-1.5 text-xs font-semibold text-secondary hover:text-fg transition-colors"
                 >
-                  Reset zoom
+                  Reset
                 </button>
               )}
             </div>
 
-            {/* Tip */}
-            {zoomStart === null && (
-              <p className="mb-2 text-[11px] text-dim">Drag on chart to zoom in. Use slider below to pan.</p>
-            )}
+            <p className="mb-2 text-[11px] text-dim">Scroll to zoom \u00B7 Drag slider to pan</p>
 
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart
-                data={displayData}
-                margin={{ top: 5, right: 10, left: -10, bottom: 5 }}
-                onMouseDown={(e: any) => {
-                  if (e?.activeLabel) setZoomLeft(e.activeLabel)
-                }}
-                onMouseMove={(e: any) => {
-                  if (zoomLeft && e?.activeLabel) setZoomRight(e.activeLabel)
-                }}
-                onMouseUp={handleZoomSelect}
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-chart-grid)" vertical={false} />
-                <XAxis
-                  dataKey="date"
-                  stroke="var(--color-chart-axis)"
-                  tick={{ fontSize: 11, fill: 'var(--color-chart-tick)' }}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <YAxis
-                  stroke="var(--color-chart-axis)"
-                  tick={{ fontSize: 11, fill: 'var(--color-chart-tick)' }}
-                  tickLine={false}
-                  axisLine={false}
-                  domain={['dataMin - 0.5', 'dataMax + 0.5']}
-                />
-                <Tooltip
-                  content={({ active, payload }) => {
-                    if (!active || !payload?.length) return null
-                    const d = payload[0].payload
-                    return (
-                      <div
-                        style={{
-                          backgroundColor: 'var(--color-tooltip-bg)',
-                          border: '1px solid var(--color-tooltip-border)',
-                          borderRadius: '8px',
-                          color: 'var(--color-fg)',
-                          fontSize: '13px',
-                          padding: '8px 12px',
-                        }}
-                      >
-                        <p className="font-semibold">{d.weight_kg} kg</p>
-                        <p className="text-xs text-secondary">{d.fullDate}</p>
-                        {d.notes && <p className="mt-1 text-xs text-dim">{d.notes}</p>}
-                      </div>
-                    )
-                  }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="weight_kg"
-                  stroke="#00D4C8"
-                  strokeWidth={2}
-                  dot={{ fill: '#00D4C8', r: 3 }}
-                  activeDot={{ r: 5, fill: '#00D4C8' }}
-                />
-                {/* Drag-to-zoom highlight */}
-                {zoomLeft && zoomRight && (
-                  <ReferenceArea
-                    x1={zoomLeft}
-                    x2={zoomRight}
-                    strokeOpacity={0.3}
-                    fill="#00D4C8"
-                    fillOpacity={0.15}
+            <div ref={chartContainerRef}>
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart
+                  data={chartData}
+                  margin={{ top: 5, right: 10, left: 0, bottom: 5 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--color-chart-grid)" vertical={false} />
+                  <XAxis
+                    dataKey="date"
+                    stroke="var(--color-chart-axis)"
+                    tick={{ fontSize: 11, fill: 'var(--color-chart-tick)' }}
+                    tickLine={false}
+                    axisLine={false}
                   />
-                )}
-                {/* Brush slider — only when not in custom zoom */}
-                {zoomStart === null && (
+                  <YAxis
+                    stroke="var(--color-chart-axis)"
+                    tick={{ fontSize: 11, fill: 'var(--color-chart-tick)' }}
+                    tickLine={false}
+                    axisLine={false}
+                    domain={yDomain}
+                    ticks={yTicks}
+                    tickFormatter={(v: number) => v.toFixed(yStep < 1 ? 1 : 0)}
+                    width={46}
+                    allowDataOverflow
+                  />
+                  <Tooltip
+                    cursor={{ stroke: 'var(--color-dim)', strokeWidth: 1, strokeDasharray: '4 2' }}
+                    content={({ active, payload }) => {
+                      if (!active || !payload?.length) return null
+                      const d = payload[0].payload
+                      return (
+                        <div
+                          style={{
+                            backgroundColor: 'var(--color-tooltip-bg)',
+                            border: '1px solid var(--color-tooltip-border)',
+                            borderRadius: '8px',
+                            color: 'var(--color-fg)',
+                            fontSize: '13px',
+                            padding: '8px 12px',
+                            boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                          }}
+                        >
+                          <p className="font-semibold">{d.weight_kg} kg</p>
+                          <p className="text-xs text-secondary">{format(parseISO(d.fullDate), 'dd/MM/yyyy')}</p>
+                          {d.notes && <p className="mt-1 text-xs text-dim">{d.notes}</p>}
+                        </div>
+                      )
+                    }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="weight_kg"
+                    stroke="#00D4C8"
+                    strokeWidth={2}
+                    dot={{ fill: '#00D4C8', r: 3 }}
+                    activeDot={{ r: 5, fill: '#00D4C8', stroke: '#00D4C8', strokeWidth: 2 }}
+                    animationDuration={200}
+                  />
                   <Brush
                     dataKey="date"
                     height={30}
                     stroke="#00D4C8"
                     fill="var(--color-card, #1a1a2e)"
                     travellerWidth={10}
-                    startIndex={brushStart}
-                    endIndex={brushEnd}
+                    startIndex={viewStart}
+                    endIndex={viewEnd}
+                    onChange={handleBrushChange}
                   >
                     <LineChart data={chartData}>
                       <Line
@@ -315,12 +368,71 @@ export default function WeightTab() {
                       />
                     </LineChart>
                   </Brush>
-                )}
-              </LineChart>
-            </ResponsiveContainer>
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
           </>
         )}
       </div>
+
+      {/* Weight log */}
+      {entries.length > 0 && (
+        <div className="mt-8">
+          <h2 className="mb-3 text-sm font-semibold text-fg">Log</h2>
+          <div className="space-y-2">
+            {[...entries].reverse().map((entry) => {
+              const isConfirming = deletingId === entry.id
+              return (
+                <div
+                  key={entry.id}
+                  className="flex items-center justify-between rounded-xl border border-card-border bg-card px-4 py-3"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-baseline gap-3">
+                      <span className="text-sm font-medium text-fg">
+                        {format(parseISO(entry.logged_date), 'dd/MM/yyyy')}
+                      </span>
+                      <span className="text-sm font-bold text-teal">{entry.weight_kg} kg</span>
+                    </div>
+                    {entry.notes && (
+                      <p className="mt-0.5 truncate text-xs text-dim">{entry.notes}</p>
+                    )}
+                  </div>
+                  <div className="ml-3 flex-shrink-0">
+                    {isConfirming ? (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => deleteEntry(entry.id)}
+                          className="rounded-lg bg-red-600 px-2.5 py-1 text-[11px] font-medium text-white transition-opacity hover:opacity-90"
+                        >
+                          Delete
+                        </button>
+                        <button
+                          onClick={() => setDeletingId(null)}
+                          className="rounded-lg border border-card-border px-2.5 py-1 text-[11px] font-medium text-secondary transition-colors hover:text-fg"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setDeletingId(entry.id)}
+                        className="p-1 text-muted transition-colors hover:text-red-500"
+                        aria-label="Delete entry"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="3 6 5 6 21 6" />
+                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { format } from 'date-fns'
 import { supabase } from '../../lib/supabase'
+import { useAuth } from '../../lib/auth'
 import type { Fast } from '../../types'
 
 function formatDuration(minutes: number): string {
@@ -12,6 +13,7 @@ function formatDuration(minutes: number): string {
 }
 
 export default function HistoryTab() {
+  const { user } = useAuth()
   const [fasts, setFasts] = useState<Fast[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -19,14 +21,15 @@ export default function HistoryTab() {
   const [deletingId, setDeletingId] = useState<number | null>(null)
 
   useEffect(() => {
-    fetchFasts()
-  }, [])
+    if (user) fetchFasts()
+  }, [user])
 
   async function fetchFasts() {
     setError(null)
     const { data, error: err } = await supabase
       .from('fasts')
       .select('*')
+      .eq('user_id', user!.id)
       .order('end_time', { ascending: false })
     if (err) { setError('Failed to load history'); setLoading(false); return }
     setFasts(data ?? [])
@@ -83,7 +86,7 @@ export default function HistoryTab() {
                 >
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-medium text-fg">
-                      {format(new Date(fast.start_time), 'd MMM yyyy')}
+                      {format(new Date(fast.start_time), 'dd/MM/yyyy')}
                     </p>
                     <svg
                       width="14"
@@ -117,11 +120,11 @@ export default function HistoryTab() {
                         <div className="space-y-1.5 text-sm text-secondary">
                           <p>
                             <span className="text-muted">Started:</span>{' '}
-                            {format(new Date(fast.start_time), 'd MMM yyyy, HH:mm')}
+                            {format(new Date(fast.start_time), 'dd/MM/yyyy, HH:mm')}
                           </p>
                           <p>
                             <span className="text-muted">Ended:</span>{' '}
-                            {format(new Date(fast.end_time), 'd MMM yyyy, HH:mm')}
+                            {format(new Date(fast.end_time), 'dd/MM/yyyy, HH:mm')}
                           </p>
                           {fast.end_weight_kg != null && (
                             <p>

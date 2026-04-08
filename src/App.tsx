@@ -76,7 +76,7 @@ export default function App() {
       </button>
       </div>
 
-      <main className="mx-auto max-w-lg px-4 pb-24 pt-6">
+      <main className="mx-auto max-w-lg px-4 pb-28 pt-6">
         <AnimatePresence mode="wait">
           <motion.div
             key={activeTab}

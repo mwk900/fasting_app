@@ -134,9 +134,11 @@ export default function TimerTab() {
     setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }))
 
   useEffect(() => {
-    fetchActiveFast()
-    fetchLastFast()
-  }, [])
+    if (user) {
+      fetchActiveFast()
+      fetchLastFast()
+    }
+  }, [user])
 
   useEffect(() => {
     if (activeFast?.is_active && activeFast.start_time) {
@@ -176,6 +178,7 @@ export default function TimerTab() {
     const { data } = await supabase
       .from('fasts')
       .select('*')
+      .eq('user_id', user!.id)
       .order('end_time', { ascending: false })
       .limit(1)
       .single()
@@ -185,11 +188,19 @@ export default function TimerTab() {
   async function startFast() {
     setError(null)
     const now = new Date().toISOString()
-    const { data, error: err } = await supabase
+
+    // Check if user already has a row
+    const { data: existing } = await supabase
       .from('active_fast')
-      .upsert({ user_id: user!.id, start_time: now, is_active: true }, { onConflict: 'user_id' })
-      .select()
-      .single()
+      .select('id')
+      .eq('user_id', user!.id)
+      .maybeSingle()
+
+    const query = existing
+      ? supabase.from('active_fast').update({ start_time: now, is_active: true }).eq('user_id', user!.id)
+      : supabase.from('active_fast').insert({ user_id: user!.id, start_time: now, is_active: true })
+
+    const { data, error: err } = await query.select().single()
     if (err) {
       setError('Failed to start fast')
       return
@@ -220,14 +231,15 @@ export default function TimerTab() {
 
     const { error: updateErr } = await supabase
       .from('active_fast')
-      .upsert({ user_id: user!.id, start_time: null, is_active: false }, { onConflict: 'user_id' })
+      .update({ start_time: null, is_active: false })
+      .eq('user_id', user!.id)
 
     if (updateErr) {
       setError('Failed to reset timer')
       return
     }
 
-    setActiveFast({ id: 1, start_time: null, is_active: false })
+    setActiveFast({ ...activeFast, start_time: null, is_active: false })
     setShowStopModal(false)
     fetchLastFast()
   }
@@ -439,7 +451,7 @@ export default function TimerTab() {
           </motion.button>
           {lastFast && (
             <p className="mt-6 text-sm text-muted">
-              Last fast: {format(new Date(lastFast.end_time), 'd MMM yyyy')} &mdash;{' '}
+              Last fast: {format(new Date(lastFast.end_time), 'dd/MM/yyyy')} &mdash;{' '}
               {formatDurationShort(lastFast.duration_minutes)}
             </p>
           )}

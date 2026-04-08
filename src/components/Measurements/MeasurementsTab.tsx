@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
-import { format } from 'date-fns'
+import { format, parseISO } from 'date-fns'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../lib/auth'
 import type { Measurement } from '../../types'
@@ -28,14 +28,15 @@ export default function MeasurementsTab() {
   const [notes, setNotes] = useState('')
 
   useEffect(() => {
-    fetchEntries()
-  }, [])
+    if (user) fetchEntries()
+  }, [user])
 
   async function fetchEntries() {
     setError(null)
     const { data, error: err } = await supabase
       .from('measurements')
       .select('*')
+      .eq('user_id', user!.id)
       .order('logged_date', { ascending: false })
     if (err) { setError('Failed to load measurements'); setLoading(false); return }
     setEntries(data ?? [])
@@ -97,7 +98,7 @@ export default function MeasurementsTab() {
 
         <div className="grid grid-cols-2 gap-3">
           {FIELDS.map((f) => (
-            <div key={f.key}>
+            <div key={f.key} className="min-w-0">
               <label className="mb-1 block text-xs font-medium text-secondary">
                 {f.label} ({f.unit})
               </label>
@@ -147,7 +148,7 @@ export default function MeasurementsTab() {
                 className="rounded-xl border border-card-border bg-card p-4"
               >
                 <p className="text-sm font-medium text-fg">
-                  {format(new Date(m.logged_date), 'd MMM yyyy')}
+                  {format(parseISO(m.logged_date), 'dd/MM/yyyy')}
                 </p>
                 <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-secondary">
                   {m.weight_kg != null && <span>Weight: {m.weight_kg} kg</span>}
