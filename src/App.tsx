@@ -14,7 +14,7 @@ export type Theme = 'dark' | 'light'
 
 export default function App() {
   const { user, loading: authLoading, signOut } = useAuth()
-  const [activeTab, setActiveTab] = useState<Tab>('timer')
+  const [activeTab, setActiveTab] = useState<Tab>('gym')
   const [theme, setTheme] = useState<Theme>(() => {
     return (localStorage.getItem('theme') as Theme) || 'dark'
   })
