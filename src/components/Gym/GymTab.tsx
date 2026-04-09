@@ -4,6 +4,7 @@ import { format, formatDistanceToNow, parseISO } from 'date-fns'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../lib/auth'
 import GymProgress from './GymProgress'
+import DateInput from '../DateInput'
 import type { Exercise, WorkoutSession, WorkoutType } from '../../types'
 
 /* ─── Local types ─────────────────────────────────────────────────── */
@@ -75,6 +76,7 @@ export default function GymTab() {
   const [skippedExercises, setSkippedExercises] = useState<Set<number>>(new Set())
   const [showAddMidWorkout, setShowAddMidWorkout] = useState(false)
   const [midWorkoutExName, setMidWorkoutExName] = useState('')
+  const [showExList, setShowExList] = useState(false)
   const [workoutNotes, setWorkoutNotes] = useState('')
 
   /* Workout date (for backdating) */
@@ -152,6 +154,10 @@ export default function GymTab() {
   async function addExercise(e: React.FormEvent) {
     e.preventDefault()
     if (!newExName.trim()) return
+    const duplicate = exercises[selectedType].some(
+      (ex) => ex.name.toLowerCase() === newExName.trim().toLowerCase(),
+    )
+    if (duplicate) { setError('Exercise already exists'); return }
     setSavingEx(true)
     setError(null)
     const list = exercises[selectedType]
@@ -207,6 +213,7 @@ export default function GymTab() {
     setWorkoutNotes('')
     setShowAddMidWorkout(false)
     setMidWorkoutExName('')
+    setShowExList(false)
     setWorkoutDate(format(new Date(), 'yyyy-MM-dd'))
 
     const { data: session, error: err } = await supabase
@@ -316,24 +323,109 @@ export default function GymTab() {
   async function addExerciseMidWorkout(e: React.FormEvent) {
     e.preventDefault()
     if (!midWorkoutExName.trim() || savingEx) return
+    const duplicate = exercises[selectedType].some(
+      (ex) => ex.name.toLowerCase() === midWorkoutExName.trim().toLowerCase(),
+    )
+    if (duplicate) { setError('Exercise already exists'); return }
     setSavingEx(true)
+    setError(null)
     const list = exercises[selectedType]
-    const maxOrder = list.length > 0 ? Math.max(...list.map((x) => x.sort_order)) + 1 : 0
+    const insertIdx = exIndex + 1 // insert right after current exercise
+    const currentSortOrder = list[exIndex]?.sort_order ?? 0
+
+    // Shift sort_order for all exercises after the insertion point
+    const toShift = list.slice(insertIdx)
+    if (toShift.length > 0) {
+      await Promise.all(
+        toShift.map((ex) =>
+          supabase.from('exercises').update({ sort_order: ex.sort_order + 1 }).eq('id', ex.id)
+        )
+      )
+    }
+
     const { data: newEx, error: err } = await supabase
       .from('exercises')
       .insert({
         user_id: user!.id, name: midWorkoutExName.trim(),
-        workout_type: selectedType, sort_order: maxOrder,
+        workout_type: selectedType, sort_order: currentSortOrder + 1,
       })
       .select().single()
     if (err || !newEx) { setError('Failed to add exercise'); setSavingEx(false); return }
-    setExercises((prev) => ({ ...prev, [selectedType]: [...prev[selectedType], newEx] }))
+    // Save current exercise sets before jumping
+    const curEx = currentExercise()
+    if (curEx && sessionId) {
+      const sets = sessionSets[curEx.id] ?? []
+      const valid = sets.filter((s) => s.weight_kg > 0 || s.reps > 0)
+      if (valid.length > 0) {
+        await supabase.from('workout_sets').delete().eq('session_id', sessionId).eq('exercise_id', curEx.id)
+        await supabase.from('workout_sets').insert(
+          valid.map((s) => ({
+            user_id: user!.id, session_id: sessionId, exercise_id: curEx.id,
+            set_number: s.set_number, weight_kg: s.weight_kg, reps: s.reps,
+          }))
+        )
+      }
+    }
+    // Insert at position right after current exercise
+    const newList = [...list]
+    newList.splice(insertIdx, 0, newEx)
+    for (let i = insertIdx + 1; i < newList.length; i++) {
+      newList[i] = { ...newList[i], sort_order: newList[i].sort_order + 1 }
+    }
+    setExercises((prev) => ({ ...prev, [selectedType]: newList }))
     setSessionSets((prev) => ({
       ...prev, [newEx.id]: [{ exercise_id: newEx.id, set_number: 1, weight_kg: 0, reps: 0 }],
     }))
+    setAnimDir('next')
+    setExIndex(insertIdx)
     setMidWorkoutExName('')
     setShowAddMidWorkout(false)
+    setShowExList(false)
     setSavingEx(false)
+  }
+
+  async function deleteExerciseMidWorkout(exId: number) {
+    const exList = exercises[selectedType]
+    const delIdx = exList.findIndex((e) => e.id === exId)
+    if (delIdx < 0) return
+    setError(null)
+    if (sessionId) {
+      await supabase.from('workout_sets').delete().eq('session_id', sessionId).eq('exercise_id', exId)
+    }
+    await supabase.from('exercises').delete().eq('id', exId)
+    const newList = exList.filter((e) => e.id !== exId)
+    setExercises((prev) => ({ ...prev, [selectedType]: newList }))
+    setSessionSets((prev) => { const next = { ...prev }; delete next[exId]; return next })
+    setSkippedExercises((prev) => { const next = new Set(prev); next.delete(exId); return next })
+    setDeletingExId(null)
+    if (newList.length === 0) { cancelWorkout(); return }
+    if (delIdx < exIndex) {
+      setExIndex((i) => i - 1)
+    } else if (delIdx === exIndex && exIndex >= newList.length) {
+      setExIndex(newList.length - 1)
+    }
+  }
+
+  async function jumpToExercise(targetIdx: number) {
+    if (targetIdx === exIndex) return
+    const ex = currentExercise()
+    if (ex && sessionId) {
+      const sets = sessionSets[ex.id] ?? []
+      const valid = sets.filter((s) => s.weight_kg > 0 || s.reps > 0)
+      if (valid.length > 0) {
+        await supabase.from('workout_sets').delete().eq('session_id', sessionId).eq('exercise_id', ex.id)
+        await supabase.from('workout_sets').insert(
+          valid.map((s) => ({
+            user_id: user!.id, session_id: sessionId, exercise_id: ex.id,
+            set_number: s.set_number, weight_kg: s.weight_kg, reps: s.reps,
+          }))
+        )
+      }
+    }
+    setAnimDir(targetIdx > exIndex ? 'next' : 'prev')
+    setExIndex(targetIdx)
+    setShowExList(false)
+    setDeletingExId(null)
   }
 
   async function saveAndAdvance() {
@@ -428,7 +520,7 @@ export default function GymTab() {
   function resetWorkout() {
     setSessionId(null); setExIndex(0); setSessionSets({}); setPrevSets({})
     setWorkoutStart(null); setConfirmCancel(false); setIsFasted(false)
-    setSkippedExercises(new Set()); setWorkoutNotes('')
+    setSkippedExercises(new Set()); setWorkoutNotes(''); setShowExList(false)
     setCardioDistance(''); setCardioMinutes(''); setCardioFeel(''); setCardioFasted(false)
     setWorkoutDate(format(new Date(), 'yyyy-MM-dd'))
     setScreen('select')
@@ -498,6 +590,27 @@ export default function GymTab() {
     setRecentWorkouts((prev) => prev.filter((s) => s.id !== id))
     setDeletingSessionId(null)
     if (detailSession?.id === id) setScreen('select')
+    fetchLastSessions()
+  }
+
+  async function toggleDetailFasted() {
+    if (!detailSession) return
+    const newVal = !detailSession.is_fasted
+    const { error: err } = await supabase.from('workout_sessions').update({ is_fasted: newVal }).eq('id', detailSession.id)
+    if (err) { setError('Failed to update fasted status'); return }
+    setDetailSession({ ...detailSession, is_fasted: newVal })
+    setRecentWorkouts((prev) => prev.map((s) => s.id === detailSession.id ? { ...s, is_fasted: newVal } : s))
+  }
+
+  async function updateDetailDate(newDate: string) {
+    if (!detailSession) return
+    const ts = new Date(newDate + 'T12:00:00').toISOString()
+    const { error: err } = await supabase.from('workout_sessions')
+      .update({ started_at: ts, completed_at: ts })
+      .eq('id', detailSession.id)
+    if (err) { setError('Failed to update date'); return }
+    setDetailSession({ ...detailSession, started_at: ts, completed_at: ts })
+    setRecentWorkouts((prev) => prev.map((s) => s.id === detailSession.id ? { ...s, started_at: ts, completed_at: ts } : s))
     fetchLastSessions()
   }
 
@@ -582,10 +695,19 @@ export default function GymTab() {
 
         <div className="mb-4 flex items-center gap-2">
           <span className="rounded-full px-2.5 py-0.5 text-xs font-semibold" style={{ backgroundColor: meta.color + '18', color: meta.color }}>{meta.label}</span>
-          {detailSession.is_fasted && (
-            <span className="rounded-full bg-teal/15 px-2 py-0.5 text-[11px] font-bold text-teal">F</span>
-          )}
-          <span className="text-sm text-secondary">{format(parseISO(detailSession.completed_at!), 'dd/MM/yyyy HH:mm')}</span>
+          <button onClick={toggleDetailFasted}
+            className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold transition-colors ${
+              detailSession.is_fasted
+                ? 'bg-teal/15 text-teal border border-teal/30'
+                : 'border border-card-border text-dim hover:text-secondary'
+            }`}>
+            {detailSession.is_fasted ? 'Fasted' : 'Not Fasted'}
+          </button>
+          <DateInput
+            value={format(parseISO(detailSession.completed_at!), 'yyyy-MM-dd')}
+            onChange={updateDetailDate}
+            className="rounded-lg border border-card-border bg-bg px-2.5 py-1 text-xs text-fg"
+          />
         </div>
 
         {!isCardio && dur != null && dur > 0 && (
@@ -865,9 +987,8 @@ export default function GymTab() {
 
         <div className="mb-6 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <input type="date" value={workoutDate} max={format(new Date(), 'yyyy-MM-dd')}
-              onChange={(e) => setWorkoutDate(e.target.value)}
-              className="rounded-lg border border-card-border bg-bg px-2.5 py-1.5 text-xs text-fg outline-none focus:border-teal focus:ring-1 focus:ring-teal" />
+            <DateInput value={workoutDate} onChange={setWorkoutDate} max={format(new Date(), 'yyyy-MM-dd')}
+              className="rounded-lg border border-card-border bg-bg px-2.5 py-1.5 text-xs text-fg" />
             {workoutDate !== format(new Date(), 'yyyy-MM-dd') && (
               <span className="text-[11px] font-medium text-amber-500">Backdated</span>
             )}
@@ -943,9 +1064,8 @@ export default function GymTab() {
         {/* Date + Fasted row */}
         <div className="mb-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <input type="date" value={workoutDate} max={format(new Date(), 'yyyy-MM-dd')}
-              onChange={(e) => setWorkoutDate(e.target.value)}
-              className="rounded-lg border border-card-border bg-bg px-2.5 py-1.5 text-xs text-fg outline-none focus:border-teal focus:ring-1 focus:ring-teal" />
+            <DateInput value={workoutDate} onChange={setWorkoutDate} max={format(new Date(), 'yyyy-MM-dd')}
+              className="rounded-lg border border-card-border bg-bg px-2.5 py-1.5 text-xs text-fg" />
             {workoutDate !== format(new Date(), 'yyyy-MM-dd') && (
               <span className="text-[11px] font-medium text-amber-500">Backdated</span>
             )}
@@ -1049,7 +1169,7 @@ export default function GymTab() {
 
               {/* Add exercise mid-workout */}
               {showAddMidWorkout ? (
-                <form onSubmit={addExerciseMidWorkout} className="mb-5 flex gap-2">
+                <form onSubmit={addExerciseMidWorkout} className="mb-4 flex gap-2">
                   <input type="text" value={midWorkoutExName} onChange={(e) => setMidWorkoutExName(e.target.value)}
                     placeholder="New exercise name" autoFocus
                     className="flex-1 rounded-lg border border-card-border bg-bg px-3 py-2 text-sm text-fg placeholder-dim outline-none focus:border-teal focus:ring-1 focus:ring-teal" />
@@ -1059,11 +1179,70 @@ export default function GymTab() {
                     className="rounded-lg border border-card-border px-3 py-2 text-sm text-muted">No</button>
                 </form>
               ) : (
-                <button onClick={() => setShowAddMidWorkout(true)}
-                  className="mb-5 text-xs font-medium text-muted transition-colors hover:text-fg">
-                  + Add New Exercise
-                </button>
+                <div className="mb-5 flex items-center gap-4">
+                  <button onClick={() => setShowAddMidWorkout(true)}
+                    className="text-xs font-medium text-muted transition-colors hover:text-fg">
+                    + Add New Exercise
+                  </button>
+                  <button onClick={() => { setShowExList((v) => !v); setDeletingExId(null) }}
+                    className="text-xs font-medium text-muted transition-colors hover:text-fg">
+                    {showExList ? 'Hide Exercise List' : 'Exercise List'}
+                  </button>
+                </div>
               )}
+
+              {/* Exercise list overlay */}
+              <AnimatePresence>
+                {showExList && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="mb-5 overflow-hidden rounded-xl border border-card-border bg-card"
+                  >
+                    <div className="px-4 py-2.5 border-b border-card-border">
+                      <p className="text-xs font-semibold text-secondary">Exercises ({exList.length})</p>
+                    </div>
+                    <div className="divide-y divide-card-border">
+                      {exList.map((exercise, i) => {
+                        const isCurrent = i === exIndex
+                        const isSkippedEx = skippedExercises.has(exercise.id)
+                        const isDeleting = deletingExId === exercise.id
+                        return (
+                          <div key={exercise.id} className={`flex items-center justify-between px-4 py-2.5 ${isCurrent ? 'bg-teal/5' : ''}`}>
+                            <button onClick={() => jumpToExercise(i)} disabled={isCurrent}
+                              className="flex items-center gap-2 min-w-0 text-left disabled:cursor-default">
+                              <span className="w-5 text-[11px] font-medium text-dim">{i + 1}.</span>
+                              <span className={`text-sm truncate ${isCurrent ? 'font-semibold text-teal' : isSkippedEx ? 'text-dim line-through' : 'text-fg hover:text-teal transition-colors'}`}>
+                                {exercise.name}
+                              </span>
+                              {isCurrent && <span className="text-[10px] font-bold text-teal">Current</span>}
+                            </button>
+                            <div className="ml-2 flex-shrink-0">
+                              {isDeleting ? (
+                                <div className="flex items-center gap-1.5">
+                                  <button onClick={() => deleteExerciseMidWorkout(exercise.id)}
+                                    className="rounded-lg bg-red-600 px-2 py-1 text-[11px] font-medium text-white">Delete</button>
+                                  <button onClick={() => setDeletingExId(null)}
+                                    className="rounded-lg border border-card-border px-2 py-1 text-[11px] text-secondary">Cancel</button>
+                                </div>
+                              ) : (
+                                <button onClick={() => setDeletingExId(exercise.id)}
+                                  className="p-1 text-muted transition-colors hover:text-red-500">
+                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <polyline points="3 6 5 6 21 6" />
+                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                  </svg>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
 
               {/* Navigation buttons */}
               <div className="flex gap-2">

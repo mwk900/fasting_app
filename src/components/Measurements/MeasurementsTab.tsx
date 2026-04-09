@@ -4,6 +4,7 @@ import { format, parseISO } from 'date-fns'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../lib/auth'
 import type { Measurement } from '../../types'
+import DateInput from '../DateInput'
 import {
   ResponsiveContainer,
   LineChart,
@@ -166,12 +167,11 @@ export default function MeasurementsTab() {
       <form onSubmit={handleSave} className="space-y-3 rounded-xl border border-card-border bg-card p-4">
         <div>
           <label className="mb-1 block text-xs font-medium text-secondary">Date</label>
-          <input
-            type="date"
+          <DateInput
             value={date}
-            onChange={(e) => setDate(e.target.value)}
+            onChange={setDate}
             required
-            className="w-full rounded-lg border border-card-border bg-bg px-3 py-2.5 text-sm text-fg outline-none focus:border-teal focus:ring-1 focus:ring-teal"
+            className="w-full rounded-lg border border-card-border bg-bg px-3 py-2.5 text-sm text-fg"
           />
         </div>
 
