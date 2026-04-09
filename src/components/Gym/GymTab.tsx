@@ -357,7 +357,7 @@ export default function GymTab() {
       setExIndex((i) => i + 1)
     } else {
       await supabase.from('workout_sessions')
-        .update({ completed_at: completedAtTimestamp() })
+        .update(sessionTimestamps())
         .eq('id', sessionId)
       setScreen('complete')
       fetchLastSessions()
@@ -382,7 +382,7 @@ export default function GymTab() {
       setExIndex((i) => i + 1)
     } else {
       await supabase.from('workout_sessions')
-        .update({ completed_at: completedAtTimestamp() })
+        .update(sessionTimestamps())
         .eq('id', sessionId)
       setScreen('complete')
       fetchLastSessions()
@@ -453,6 +453,7 @@ export default function GymTab() {
 
   async function completeCardio() {
     setSaving(true)
+    const timestamps = sessionTimestamps()
     const { data: session, error: err } = await supabase
       .from('workout_sessions')
       .insert({
@@ -461,7 +462,8 @@ export default function GymTab() {
         distance_km: cardioDistance ? parseFloat(cardioDistance) : null,
         duration_minutes: cardioMinutes ? parseFloat(cardioMinutes) : null,
         feel_note: cardioFeel || null,
-        completed_at: completedAtTimestamp(),
+        started_at: timestamps.started_at,
+        completed_at: timestamps.completed_at,
       })
       .select().single()
     if (err || !session) { setError('Failed to save cardio'); setSaving(false); return }
@@ -519,11 +521,13 @@ export default function GymTab() {
     return (sessionSets[exerciseId] ?? []).reduce((sum, s) => sum + s.weight_kg * s.reps, 0)
   }
 
-  function completedAtTimestamp(): string {
+  function sessionTimestamps(): { started_at: string; completed_at: string } {
     const today = format(new Date(), 'yyyy-MM-dd')
-    return workoutDate === today
-      ? new Date().toISOString()
-      : new Date(workoutDate + 'T12:00:00').toISOString()
+    if (workoutDate === today) {
+      return { started_at: workoutStart?.toISOString() ?? new Date().toISOString(), completed_at: new Date().toISOString() }
+    }
+    const backdated = new Date(workoutDate + 'T12:00:00').toISOString()
+    return { started_at: backdated, completed_at: backdated }
   }
 
   function durationStr(): string {
@@ -584,7 +588,7 @@ export default function GymTab() {
           <span className="text-sm text-secondary">{format(parseISO(detailSession.completed_at!), 'dd/MM/yyyy HH:mm')}</span>
         </div>
 
-        {!isCardio && dur != null && (
+        {!isCardio && dur != null && dur > 0 && (
           <p className="mb-4 text-xs text-dim">Duration: {dur >= 60 ? `${Math.floor(dur / 60)}h ${dur % 60}m` : `${dur}m`}</p>
         )}
 
@@ -853,9 +857,21 @@ export default function GymTab() {
     const meta = WORKOUT_META.cardio
     return (
       <div>
-        <div className="mb-6 flex items-center justify-between">
+        <div className="mb-3 flex items-center justify-between">
           <button onClick={resetWorkout} className="text-sm text-muted transition-colors hover:text-fg">Cancel</button>
           <span className="text-sm font-semibold" style={{ color: meta.color }}>Cardio</span>
+          <div className="w-16" />
+        </div>
+
+        <div className="mb-6 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <input type="date" value={workoutDate} max={format(new Date(), 'yyyy-MM-dd')}
+              onChange={(e) => setWorkoutDate(e.target.value)}
+              className="rounded-lg border border-card-border bg-bg px-2.5 py-1.5 text-xs text-fg outline-none focus:border-teal focus:ring-1 focus:ring-teal" />
+            {workoutDate !== format(new Date(), 'yyyy-MM-dd') && (
+              <span className="text-[11px] font-medium text-amber-500">Backdated</span>
+            )}
+          </div>
           <button onClick={() => setCardioFasted(!cardioFasted)}
             className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
               cardioFasted ? 'bg-teal/15 text-teal border border-teal/30' : 'border border-card-border text-dim'
@@ -865,17 +881,6 @@ export default function GymTab() {
         </div>
 
         <div className="space-y-4">
-          <div>
-            <label className="mb-1 block text-xs font-medium text-secondary">Date</label>
-            <div className="flex items-center gap-2">
-              <input type="date" value={workoutDate} max={format(new Date(), 'yyyy-MM-dd')}
-                onChange={(e) => setWorkoutDate(e.target.value)}
-                className="w-full rounded-lg border border-card-border bg-bg px-3 py-3 text-sm text-fg outline-none focus:border-teal focus:ring-1 focus:ring-teal" />
-              {workoutDate !== format(new Date(), 'yyyy-MM-dd') && (
-                <span className="shrink-0 text-[11px] font-medium text-amber-500">Backdated</span>
-              )}
-            </div>
-          </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-secondary">Distance (km)</label>
             <input type="number" inputMode="decimal" step="0.1" value={cardioDistance}
@@ -921,7 +926,7 @@ export default function GymTab() {
     return (
       <div>
         {/* Header */}
-        <div className="mb-4 flex items-center justify-between">
+        <div className="mb-3 flex items-center justify-between">
           {confirmCancel ? (
             <div className="flex items-center gap-2">
               <span className="text-xs text-muted">Cancel workout?</span>
@@ -932,23 +937,25 @@ export default function GymTab() {
             <button onClick={() => setConfirmCancel(true)} className="text-sm text-muted transition-colors hover:text-fg">Cancel</button>
           )}
           <span className="text-sm font-semibold" style={{ color: meta.color }}>{meta.label} Day</span>
+          <div className="w-16" />
+        </div>
+
+        {/* Date + Fasted row */}
+        <div className="mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <input type="date" value={workoutDate} max={format(new Date(), 'yyyy-MM-dd')}
+              onChange={(e) => setWorkoutDate(e.target.value)}
+              className="rounded-lg border border-card-border bg-bg px-2.5 py-1.5 text-xs text-fg outline-none focus:border-teal focus:ring-1 focus:ring-teal" />
+            {workoutDate !== format(new Date(), 'yyyy-MM-dd') && (
+              <span className="text-[11px] font-medium text-amber-500">Backdated</span>
+            )}
+          </div>
           <button onClick={toggleFasted}
             className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
               isFasted ? 'bg-teal/15 text-teal border border-teal/30' : 'border border-card-border text-dim'
             }`}>
             {isFasted ? 'Fasted' : 'Not Fasted'}
           </button>
-        </div>
-
-        {/* Date picker */}
-        <div className="mb-4 flex items-center gap-2">
-          <label className="text-xs font-medium text-secondary">Date:</label>
-          <input type="date" value={workoutDate} max={format(new Date(), 'yyyy-MM-dd')}
-            onChange={(e) => setWorkoutDate(e.target.value)}
-            className="rounded-lg border border-card-border bg-bg px-2.5 py-1.5 text-xs text-fg outline-none focus:border-teal focus:ring-1 focus:ring-teal" />
-          {workoutDate !== format(new Date(), 'yyyy-MM-dd') && (
-            <span className="text-[11px] font-medium text-amber-500">Backdated</span>
-          )}
         </div>
 
         {/* Progress bar */}
