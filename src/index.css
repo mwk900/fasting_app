@@ -32,6 +32,10 @@
   --color-tooltip-border: #e0e0e0;
 }
 
+html {
+  font-size: 17px;
+}
+
 * {
   box-sizing: border-box;
 }

@@ -13,9 +13,11 @@ export default function DateInput({ value, onChange, max, required, className }:
   const [text, setText] = useState(() =>
     value ? format(parseISO(value), 'dd/MM/yyyy') : '',
   )
+  const [pendingIso, setPendingIso] = useState<string | null>(null)
 
   useEffect(() => {
     setText(value ? format(parseISO(value), 'dd/MM/yyyy') : '')
+    setPendingIso(null)
   }, [value])
 
   function handleChange(raw: string) {
@@ -39,20 +41,46 @@ export default function DateInput({ value, onChange, max, required, className }:
       const parsed = parse(cleaned, 'dd/MM/yyyy', new Date())
       if (isValid(parsed)) {
         const iso = format(parsed, 'yyyy-MM-dd')
-        if (!max || iso <= max) onChange(iso)
+        if (!max || iso <= max) {
+          if (iso !== value) {
+            setPendingIso(iso)
+          } else {
+            setPendingIso(null)
+          }
+          return
+        }
       }
+    }
+    setPendingIso(null)
+  }
+
+  function confirmDate() {
+    if (pendingIso) {
+      onChange(pendingIso)
+      setPendingIso(null)
     }
   }
 
   return (
-    <input
-      type="text"
-      inputMode="numeric"
-      value={text}
-      onChange={(e) => handleChange(e.target.value)}
-      placeholder="dd/mm/yyyy"
-      required={required}
-      className={className}
-    />
+    <div className="flex items-center gap-1.5">
+      <input
+        type="text"
+        inputMode="numeric"
+        value={text}
+        onChange={(e) => handleChange(e.target.value)}
+        placeholder="dd/mm/yyyy"
+        required={required}
+        className={className}
+      />
+      {pendingIso && (
+        <button
+          type="button"
+          onClick={confirmDate}
+          className="rounded-lg bg-teal px-2.5 py-1 text-xs font-semibold text-bg transition-opacity hover:opacity-90 whitespace-nowrap"
+        >
+          Confirm
+        </button>
+      )}
+    </div>
   )
 }

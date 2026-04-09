@@ -38,6 +38,44 @@ const WORKOUT_META: Record<WorkoutType, { label: string; desc: string; color: st
 const STRENGTH_TYPES: WorkoutType[] = ['push', 'pull', 'legs']
 const ALL_TYPES: WorkoutType[] = ['push', 'pull', 'legs', 'cardio']
 
+/* ─── Weight input (supports BW + decimals) ──────────────────────── */
+
+function weightDisplay(v: number) {
+  return v === -1 ? 'BW' : v > 0 ? String(v) : ''
+}
+
+function WeightInput({ value, onChange, className }: {
+  value: number
+  onChange: (v: number) => void
+  className: string
+}) {
+  const [text, setText] = useState(() => weightDisplay(value))
+  const [focused, setFocused] = useState(false)
+
+  useEffect(() => {
+    if (!focused) setText(weightDisplay(value))
+  }, [value, focused])
+
+  function handleChange(raw: string) {
+    setText(raw)
+    const upper = raw.trim().toUpperCase()
+    if (upper === 'BW') { onChange(-1); return }
+    if (upper === '' || upper === 'B') { onChange(0); return }
+    const v = parseFloat(upper)
+    if (!isNaN(v) && v >= 0) onChange(v)
+  }
+
+  return (
+    <input type="text" inputMode="text"
+      value={text}
+      onChange={(e) => handleChange(e.target.value)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => { setFocused(false); setText(weightDisplay(value)) }}
+      placeholder="0"
+      className={className} />
+  )
+}
+
 /* ─── Component ───────────────────────────────────────────────────── */
 
 export default function GymTab() {
@@ -92,6 +130,7 @@ export default function GymTab() {
   const [detailSession, setDetailSession] = useState<WorkoutSession | null>(null)
   const [detailSets, setDetailSets] = useState<DetailSet[]>([])
   const [deletingSessionId, setDeletingSessionId] = useState<number | null>(null)
+  const [historyPage, setHistoryPage] = useState(0)
 
   /* ─── Data fetching ────────────────────────────────────────────── */
 
@@ -145,7 +184,6 @@ export default function GymTab() {
       .eq('user_id', user!.id)
       .not('completed_at', 'is', null)
       .order('completed_at', { ascending: false })
-      .limit(15)
     setRecentWorkouts(data ?? [])
   }
 
@@ -247,9 +285,10 @@ export default function GymTab() {
         .order('set_number', { ascending: true })
       for (const s of sets ?? []) {
         if (!prevGrouped[s.exercise_id]) prevGrouped[s.exercise_id] = []
+        const w = Number(s.weight_kg)
         prevGrouped[s.exercise_id].push({
           exercise_id: s.exercise_id, set_number: s.set_number,
-          weight_kg: Number(s.weight_kg), reps: s.reps,
+          weight_kg: w === 0 && s.reps > 0 ? -1 : w, reps: s.reps,
         })
       }
     }
@@ -355,13 +394,13 @@ export default function GymTab() {
     const curEx = currentExercise()
     if (curEx && sessionId) {
       const sets = sessionSets[curEx.id] ?? []
-      const valid = sets.filter((s) => s.weight_kg > 0 || s.reps > 0)
+      const valid = sets.filter((s) => s.weight_kg > 0 || s.weight_kg === -1 || s.reps > 0)
       if (valid.length > 0) {
         await supabase.from('workout_sets').delete().eq('session_id', sessionId).eq('exercise_id', curEx.id)
         await supabase.from('workout_sets').insert(
           valid.map((s) => ({
             user_id: user!.id, session_id: sessionId, exercise_id: curEx.id,
-            set_number: s.set_number, weight_kg: s.weight_kg, reps: s.reps,
+            set_number: s.set_number, weight_kg: Math.max(0, s.weight_kg), reps: s.reps,
           }))
         )
       }
@@ -411,13 +450,13 @@ export default function GymTab() {
     const ex = currentExercise()
     if (ex && sessionId) {
       const sets = sessionSets[ex.id] ?? []
-      const valid = sets.filter((s) => s.weight_kg > 0 || s.reps > 0)
+      const valid = sets.filter((s) => s.weight_kg > 0 || s.weight_kg === -1 || s.reps > 0)
       if (valid.length > 0) {
         await supabase.from('workout_sets').delete().eq('session_id', sessionId).eq('exercise_id', ex.id)
         await supabase.from('workout_sets').insert(
           valid.map((s) => ({
             user_id: user!.id, session_id: sessionId, exercise_id: ex.id,
-            set_number: s.set_number, weight_kg: s.weight_kg, reps: s.reps,
+            set_number: s.set_number, weight_kg: Math.max(0, s.weight_kg), reps: s.reps,
           }))
         )
       }
@@ -433,13 +472,13 @@ export default function GymTab() {
     if (!ex || !sessionId) return
     setSaving(true)
     const sets = sessionSets[ex.id] ?? []
-    const valid = sets.filter((s) => s.weight_kg > 0 || s.reps > 0)
+    const valid = sets.filter((s) => s.weight_kg > 0 || s.weight_kg === -1 || s.reps > 0)
     if (valid.length > 0) {
       await supabase.from('workout_sets').delete().eq('session_id', sessionId).eq('exercise_id', ex.id)
       await supabase.from('workout_sets').insert(
         valid.map((s) => ({
           user_id: user!.id, session_id: sessionId, exercise_id: ex.id,
-          set_number: s.set_number, weight_kg: s.weight_kg, reps: s.reps,
+          set_number: s.set_number, weight_kg: Math.max(0, s.weight_kg), reps: s.reps,
         }))
       )
     }
@@ -533,6 +572,26 @@ export default function GymTab() {
     resetWorkout()
   }
 
+  async function goBackToEditWorkout() {
+    if (sessionId) {
+      await supabase.from('workout_sessions')
+        .update({ completed_at: null })
+        .eq('id', sessionId)
+    }
+    const exList = exercises[selectedType]
+    setExIndex(exList.length - 1)
+    setAnimDir('prev')
+    setScreen('workout')
+  }
+
+  async function goBackToEditCardio() {
+    if (sessionId) {
+      await supabase.from('workout_sessions').delete().eq('id', sessionId)
+      setSessionId(null)
+    }
+    setScreen('cardio')
+  }
+
   /* ─── Cardio flow ──────────────────────────────────────────────── */
 
   function startCardio() {
@@ -619,19 +678,19 @@ export default function GymTab() {
   function formatPrevSets(exerciseId: number): string {
     const sets = prevSets[exerciseId]
     if (!sets || sets.length === 0) return ''
-    return sets.map((s) => `${s.weight_kg}kg x ${s.reps}`).join('  /  ')
+    return sets.map((s) => `${s.weight_kg === -1 ? 'BW' : s.weight_kg + 'kg'} x ${s.reps}`).join('  /  ')
   }
 
   function calcVolume(sets: Record<number, LocalSet[]>): number {
-    return Object.values(sets).flat().reduce((sum, s) => sum + s.weight_kg * s.reps, 0)
+    return Object.values(sets).flat().reduce((sum, s) => sum + Math.max(0, s.weight_kg) * s.reps, 0)
   }
 
   function calcPrevVolume(exerciseId: number): number {
-    return (prevSets[exerciseId] ?? []).reduce((sum, s) => sum + s.weight_kg * s.reps, 0)
+    return (prevSets[exerciseId] ?? []).reduce((sum, s) => sum + Math.max(0, s.weight_kg) * s.reps, 0)
   }
 
   function calcExVolume(exerciseId: number): number {
-    return (sessionSets[exerciseId] ?? []).reduce((sum, s) => sum + s.weight_kg * s.reps, 0)
+    return (sessionSets[exerciseId] ?? []).reduce((sum, s) => sum + Math.max(0, s.weight_kg) * s.reps, 0)
   }
 
   function sessionTimestamps(): { started_at: string; completed_at: string } {
@@ -865,46 +924,69 @@ export default function GymTab() {
         </div>
 
         {/* Recent Workouts */}
-        {recentWorkouts.length > 0 && (
-          <div className="mt-8">
-            <h2 className="mb-3 text-sm font-semibold text-fg">Recent Workouts</h2>
-            <div className="space-y-2">
-              {recentWorkouts.map((session) => {
-                const meta = WORKOUT_META[session.workout_type as WorkoutType]
-                const isDeleting = deletingSessionId === session.id
-                return (
-                  <div key={session.id} className="rounded-xl border border-card-border bg-card px-4 py-3">
-                    <div className="flex items-center justify-between">
-                      <button onClick={() => viewWorkoutDetail(session)} className="flex flex-1 items-center gap-2 text-left">
-                        <span className="rounded-full px-2 py-0.5 text-[11px] font-semibold" style={{ backgroundColor: meta.color + '18', color: meta.color }}>{meta.label}</span>
-                        {session.is_fasted && (
-                          <span className="rounded-full bg-teal/15 px-1.5 py-0.5 text-[10px] font-bold text-teal">F</span>
-                        )}
-                        <span className="text-sm text-secondary">{format(parseISO(session.completed_at!), 'dd/MM/yyyy')}</span>
-                      </button>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-dim">{formatDistanceToNow(parseISO(session.completed_at!), { addSuffix: true })}</span>
-                        {isDeleting ? (
-                          <div className="flex gap-1">
-                            <button onClick={() => deleteWorkout(session.id)} className="rounded-lg bg-red-600 px-2 py-1 text-[11px] font-medium text-white">Del</button>
-                            <button onClick={() => setDeletingSessionId(null)} className="rounded-lg border border-card-border px-2 py-1 text-[11px] text-secondary">No</button>
-                          </div>
-                        ) : (
-                          <button onClick={() => setDeletingSessionId(session.id)} className="p-1 text-muted transition-colors hover:text-red-500">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <polyline points="3 6 5 6 21 6" />
-                              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                            </svg>
-                          </button>
-                        )}
+        {recentWorkouts.length > 0 && (() => {
+          const perPage = 10
+          const totalPages = Math.ceil(recentWorkouts.length / perPage)
+          const page = Math.min(historyPage, totalPages - 1)
+          const slice = recentWorkouts.slice(page * perPage, (page + 1) * perPage)
+          return (
+            <div className="mt-8">
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-fg">Recent Workouts</h2>
+                {totalPages > 1 && (
+                  <span className="text-xs text-dim">{page + 1} / {totalPages}</span>
+                )}
+              </div>
+              <div className="space-y-2">
+                {slice.map((session) => {
+                  const meta = WORKOUT_META[session.workout_type as WorkoutType]
+                  const isDeleting = deletingSessionId === session.id
+                  return (
+                    <div key={session.id} className="rounded-xl border border-card-border bg-card px-4 py-3">
+                      <div className="flex items-center justify-between">
+                        <button onClick={() => viewWorkoutDetail(session)} className="flex flex-1 items-center gap-2 text-left">
+                          <span className="rounded-full px-2 py-0.5 text-[11px] font-semibold" style={{ backgroundColor: meta.color + '18', color: meta.color }}>{meta.label}</span>
+                          {session.is_fasted && (
+                            <span className="rounded-full bg-teal/15 px-1.5 py-0.5 text-[10px] font-bold text-teal">F</span>
+                          )}
+                          <span className="text-sm text-secondary">{format(parseISO(session.completed_at!), 'dd/MM/yyyy')}</span>
+                        </button>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-dim">{formatDistanceToNow(parseISO(session.completed_at!), { addSuffix: true })}</span>
+                          {isDeleting ? (
+                            <div className="flex gap-1">
+                              <button onClick={() => deleteWorkout(session.id)} className="rounded-lg bg-red-600 px-2 py-1 text-[11px] font-medium text-white">Del</button>
+                              <button onClick={() => setDeletingSessionId(null)} className="rounded-lg border border-card-border px-2 py-1 text-[11px] text-secondary">No</button>
+                            </div>
+                          ) : (
+                            <button onClick={() => setDeletingSessionId(session.id)} className="p-1 text-muted transition-colors hover:text-red-500">
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="3 6 5 6 21 6" />
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                              </svg>
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                )
-              })}
+                  )
+                })}
+              </div>
+              {totalPages > 1 && (
+                <div className="mt-3 flex items-center justify-center gap-2">
+                  <button onClick={() => setHistoryPage((p) => Math.max(0, p - 1))} disabled={page === 0}
+                    className="rounded-lg border border-card-border px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:text-fg disabled:opacity-25">
+                    Previous
+                  </button>
+                  <button onClick={() => setHistoryPage((p) => Math.min(totalPages - 1, p + 1))} disabled={page === totalPages - 1}
+                    className="rounded-lg border border-card-border px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:text-fg disabled:opacity-25">
+                    Next
+                  </button>
+                </div>
+              )}
             </div>
-          </div>
-        )}
+          )
+        })()}
       </div>
     )
   }
@@ -1101,7 +1183,21 @@ export default function GymTab() {
               transition={{ duration: 0.2 }}>
 
               <h2 className="mb-1 text-2xl font-bold text-fg">{ex.name}</h2>
-              {isSkipped && <p className="mb-2 text-xs font-medium text-amber-500">Skipped — go back to unskip</p>}
+              {isSkipped && (
+                <button onClick={() => {
+                  setSkippedExercises((prev) => { const next = new Set(prev); next.delete(ex.id); return next })
+                  if (!sessionSets[ex.id]) {
+                    const prev = prevSets[ex.id]
+                    if (prev && prev.length > 0) {
+                      setSessionSets((s) => ({ ...s, [ex.id]: prev.map((p) => ({ exercise_id: ex.id, set_number: p.set_number, weight_kg: p.weight_kg, reps: p.reps })) }))
+                    } else {
+                      setSessionSets((s) => ({ ...s, [ex.id]: [{ exercise_id: ex.id, set_number: 1, weight_kg: 0, reps: 0 }] }))
+                    }
+                  }
+                }} className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-500 transition-opacity hover:opacity-80">
+                  Skipped — tap to unskip
+                </button>
+              )}
 
               {prevStr && (
                 <div className="mb-4 rounded-lg border border-card-border bg-card/50 px-3 py-2">
@@ -1124,17 +1220,16 @@ export default function GymTab() {
                     </div>
                     {sets.map((s, i) => {
                       const prevSet = prevSets[ex.id]?.[i]
-                      const weightUp = prevSet && s.weight_kg > prevSet.weight_kg
+                      const weightUp = prevSet && s.weight_kg > 0 && prevSet.weight_kg > 0 && s.weight_kg > prevSet.weight_kg
                       const repsUp = prevSet && s.reps > prevSet.reps
                       return (
                         <motion.div key={i} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
                           transition={{ duration: 0.15 }} className="flex items-center gap-2">
                           <span className="w-11 text-center text-sm font-semibold text-dim">{i + 1}</span>
                           <div className="relative flex-1">
-                            <input type="number" inputMode="decimal" step="0.5"
-                              value={s.weight_kg > 0 ? s.weight_kg : ''}
-                              onChange={(e) => { const v = e.target.value === '' ? 0 : parseFloat(e.target.value); if (!isNaN(v)) updateSet(i, 'weight_kg', v) }}
-                              placeholder="0"
+                            <WeightInput
+                              value={s.weight_kg}
+                              onChange={(v) => updateSet(i, 'weight_kg', v)}
                               className={`w-full rounded-lg border bg-bg px-3 py-2.5 text-center text-sm font-medium text-fg placeholder-dim outline-none transition-colors focus:border-teal focus:ring-1 focus:ring-teal ${weightUp ? 'border-green-500/50' : 'border-card-border'}`} />
                             {weightUp && <span className="absolute -top-1.5 right-1.5 text-[10px] font-bold text-green-500">+{(s.weight_kg - prevSet.weight_kg).toFixed(1)}</span>}
                           </div>
@@ -1168,7 +1263,7 @@ export default function GymTab() {
               )}
 
               {/* Add exercise mid-workout */}
-              {showAddMidWorkout ? (
+              {showAddMidWorkout && (
                 <form onSubmit={addExerciseMidWorkout} className="mb-4 flex gap-2">
                   <input type="text" value={midWorkoutExName} onChange={(e) => setMidWorkoutExName(e.target.value)}
                     placeholder="New exercise name" autoFocus
@@ -1178,18 +1273,19 @@ export default function GymTab() {
                   <button type="button" onClick={() => { setShowAddMidWorkout(false); setMidWorkoutExName('') }}
                     className="rounded-lg border border-card-border px-3 py-2 text-sm text-muted">No</button>
                 </form>
-              ) : (
-                <div className="mb-5 flex items-center gap-4">
+              )}
+              <div className="mb-5 flex items-center gap-4">
+                {!showAddMidWorkout && (
                   <button onClick={() => setShowAddMidWorkout(true)}
                     className="text-xs font-medium text-muted transition-colors hover:text-fg">
                     + Add New Exercise
                   </button>
-                  <button onClick={() => { setShowExList((v) => !v); setDeletingExId(null) }}
-                    className="text-xs font-medium text-muted transition-colors hover:text-fg">
-                    {showExList ? 'Hide Exercise List' : 'Exercise List'}
-                  </button>
-                </div>
-              )}
+                )}
+                <button onClick={() => { setShowExList((v) => !v); setDeletingExId(null) }}
+                  className="text-xs font-medium text-muted transition-colors hover:text-fg">
+                  {showExList ? 'Hide Exercise List' : 'Exercise List'}
+                </button>
+              </div>
 
               {/* Exercise list overlay */}
               <AnimatePresence>
@@ -1314,10 +1410,16 @@ export default function GymTab() {
               placeholder="Anything else to note?" rows={2}
               className="w-full rounded-lg border border-card-border bg-bg px-3 py-2.5 text-sm text-fg placeholder-dim outline-none focus:border-teal focus:ring-1 focus:ring-teal resize-none" />
           </div>
-          <button onClick={saveNotesAndFinish}
-            className="w-full rounded-xl bg-teal py-3.5 text-sm font-semibold text-bg transition-opacity hover:opacity-90">
-            Done
-          </button>
+          <div className="flex gap-2">
+            <button onClick={goBackToEditCardio}
+              className="flex-1 rounded-xl border border-card-border py-3.5 text-sm font-semibold text-muted transition-colors hover:text-fg">
+              Go Back & Edit
+            </button>
+            <button onClick={saveNotesAndFinish}
+              className="flex-1 rounded-xl bg-teal py-3.5 text-sm font-semibold text-bg transition-opacity hover:opacity-90">
+              Done
+            </button>
+          </div>
         </motion.div>
       )
     }
@@ -1326,8 +1428,8 @@ export default function GymTab() {
     const exList = exercises[selectedType]
     const totalVolume = calcVolume(sessionSets)
     const prevTotalVolume = Object.keys(prevSets).length > 0
-      ? Object.values(prevSets).flat().reduce((sum, s) => sum + s.weight_kg * s.reps, 0) : 0
-    const totalSetsCount = Object.values(sessionSets).flat().filter((s) => s.weight_kg > 0 || s.reps > 0).length
+      ? Object.values(prevSets).flat().reduce((sum, s) => sum + Math.max(0, s.weight_kg) * s.reps, 0) : 0
+    const totalSetsCount = Object.values(sessionSets).flat().filter((s) => s.weight_kg > 0 || s.weight_kg === -1 || s.reps > 0).length
     const volumeDiff = totalVolume - prevTotalVolume
 
     return (
@@ -1382,7 +1484,7 @@ export default function GymTab() {
               )
             }
             const exSets = sessionSets[exercise.id] ?? []
-            const validSets = exSets.filter((s) => s.weight_kg > 0 || s.reps > 0)
+            const validSets = exSets.filter((s) => s.weight_kg > 0 || s.weight_kg === -1 || s.reps > 0)
             if (validSets.length === 0) return null
             const vol = calcExVolume(exercise.id)
             const prevVol = calcPrevVolume(exercise.id)
@@ -1400,7 +1502,7 @@ export default function GymTab() {
                     )}
                   </div>
                 </div>
-                <p className="text-xs text-dim">{validSets.map((s) => `${s.weight_kg}kg x ${s.reps}`).join('  /  ')}</p>
+                <p className="text-xs text-dim">{validSets.map((s) => `${s.weight_kg === -1 ? 'BW' : s.weight_kg + 'kg'} x ${s.reps}`).join('  /  ')}</p>
               </div>
             )
           })}
@@ -1413,10 +1515,16 @@ export default function GymTab() {
             className="w-full rounded-lg border border-card-border bg-bg px-3 py-2.5 text-sm text-fg placeholder-dim outline-none focus:border-teal focus:ring-1 focus:ring-teal resize-none" />
         </div>
 
-        <button onClick={saveNotesAndFinish}
-          className="mt-4 w-full rounded-xl bg-teal py-3.5 text-sm font-semibold text-bg transition-opacity hover:opacity-90">
-          Done
-        </button>
+        <div className="mt-4 flex gap-2">
+          <button onClick={goBackToEditWorkout}
+            className="flex-1 rounded-xl border border-card-border py-3.5 text-sm font-semibold text-muted transition-colors hover:text-fg">
+            Go Back & Edit
+          </button>
+          <button onClick={saveNotesAndFinish}
+            className="flex-1 rounded-xl bg-teal py-3.5 text-sm font-semibold text-bg transition-opacity hover:opacity-90">
+            Done
+          </button>
+        </div>
       </motion.div>
     )
   }
