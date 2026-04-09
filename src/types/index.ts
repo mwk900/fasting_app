@@ -36,3 +36,35 @@ export interface Measurement {
   notes: string | null
   created_at: string
 }
+
+export type WorkoutType = 'push' | 'pull' | 'legs'
+
+export interface Exercise {
+  id: number
+  user_id: string
+  name: string
+  workout_type: WorkoutType
+  sort_order: number
+  created_at: string
+}
+
+export interface WorkoutSession {
+  id: number
+  user_id: string
+  workout_type: WorkoutType
+  started_at: string
+  completed_at: string | null
+  notes: string | null
+  created_at: string
+}
+
+export interface WorkoutSet {
+  id: number
+  user_id: string
+  session_id: number
+  exercise_id: number
+  set_number: number
+  weight_kg: number
+  reps: number
+  created_at: string
+}

@@ -7,8 +7,9 @@ import TimerTab from './components/Timer/TimerTab'
 import HistoryTab from './components/History/HistoryTab'
 import WeightTab from './components/Weight/WeightTab'
 import MeasurementsTab from './components/Measurements/MeasurementsTab'
+import GymTab from './components/Gym/GymTab'
 
-export type Tab = 'timer' | 'history' | 'weight' | 'measurements'
+export type Tab = 'timer' | 'history' | 'gym' | 'weight' | 'measurements'
 export type Theme = 'dark' | 'light'
 
 export default function App() {
@@ -38,6 +39,7 @@ export default function App() {
   const tabs: Record<Tab, React.ReactNode> = {
     timer: <TimerTab />,
     history: <HistoryTab />,
+    gym: <GymTab />,
     weight: <WeightTab />,
     measurements: <MeasurementsTab />,
   }

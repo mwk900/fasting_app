@@ -32,6 +32,19 @@ const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     ),
   },
   {
+    id: 'gym',
+    label: 'Gym',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2" y="9" width="4" height="6" rx="1" />
+        <rect x="18" y="9" width="4" height="6" rx="1" />
+        <rect x="6" y="7" width="3" height="10" rx="1" />
+        <rect x="15" y="7" width="3" height="10" rx="1" />
+        <line x1="9" y1="12" x2="15" y2="12" />
+      </svg>
+    ),
+  },
+  {
     id: 'weight',
     label: 'Weight',
     icon: (
@@ -74,7 +87,7 @@ export default function TabBar({ activeTab, onTabChange }: Props) {
               {isActive && (
                 <motion.div
                   layoutId="tab-indicator"
-                  className="absolute left-4 right-4 top-0 h-0.5 rounded-full bg-teal"
+                  className="absolute left-2 right-2 top-0 h-0.5 rounded-full bg-teal"
                   transition={{ type: 'spring', stiffness: 500, damping: 35 }}
                 />
               )}
