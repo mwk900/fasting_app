@@ -37,7 +37,7 @@ export interface Measurement {
   created_at: string
 }
 
-export type WorkoutType = 'push' | 'pull' | 'legs'
+export type WorkoutType = 'push' | 'pull' | 'legs' | 'cardio'
 
 export interface Exercise {
   id: number
@@ -55,6 +55,10 @@ export interface WorkoutSession {
   started_at: string
   completed_at: string | null
   notes: string | null
+  is_fasted: boolean
+  distance_km: number | null
+  duration_minutes: number | null
+  feel_note: string | null
   created_at: string
 }
 

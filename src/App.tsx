@@ -48,12 +48,6 @@ export default function App() {
     <div className="min-h-screen bg-bg font-sans transition-colors duration-300">
       <div className="fixed right-4 top-4 z-30 flex items-center gap-2">
         <button
-          onClick={signOut}
-          className="rounded-full bg-card px-3 py-2 text-xs font-medium text-muted shadow-lg border border-card-border transition-colors hover:text-fg"
-        >
-          Sign out
-        </button>
-        <button
           onClick={toggleTheme}
           className="rounded-full bg-card p-2.5 text-muted shadow-lg border border-card-border transition-colors hover:text-fg"
           aria-label="Toggle theme"
@@ -76,6 +70,12 @@ export default function App() {
           </svg>
         )}
       </button>
+        <button
+          onClick={signOut}
+          className="rounded-full bg-card px-3 py-2 text-xs font-medium text-muted shadow-lg border border-card-border transition-colors hover:text-fg"
+        >
+          Sign out
+        </button>
       </div>
 
       <main className="mx-auto max-w-lg px-4 pb-28 pt-6">
