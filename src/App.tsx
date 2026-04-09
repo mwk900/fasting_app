@@ -19,12 +19,51 @@ export default function App() {
     return (localStorage.getItem('theme') as Theme) || 'dark'
   })
 
+  // Detect email confirmation redirect (Supabase appends #...&type=signup)
+  const [emailConfirmed, setEmailConfirmed] = useState(() => {
+    const hash = window.location.hash
+    if (hash.includes('type=signup')) {
+      window.history.replaceState(null, '', window.location.pathname)
+      return true
+    }
+    return false
+  })
+
+  useEffect(() => {
+    if (emailConfirmed) signOut()
+  }, [emailConfirmed])
+
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
     localStorage.setItem('theme', theme)
   }, [theme])
 
   const toggleTheme = () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))
+
+  if (emailConfirmed) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-bg px-4">
+        <div className="w-full max-w-sm rounded-xl border border-card-border bg-card p-6 text-center">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-green-500/10">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+              <polyline points="22 4 12 14.01 9 11.01" />
+            </svg>
+          </div>
+          <h2 className="mb-2 text-lg font-bold text-fg">Email Verified</h2>
+          <p className="text-sm text-secondary">
+            Your email address has been verified successfully. You can now sign in using your credentials.
+          </p>
+          <button
+            onClick={() => setEmailConfirmed(false)}
+            className="mt-5 w-full rounded-lg bg-teal px-4 py-2.5 text-sm font-semibold text-bg transition-opacity hover:opacity-90"
+          >
+            Go to Sign In
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   if (authLoading) {
     return (

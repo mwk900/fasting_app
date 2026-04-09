@@ -44,6 +44,8 @@ export default function WeightTab() {
   const [activeWindow, setActiveWindow] = useState<[number, number] | null>(null)
 
   const [deletingId, setDeletingId] = useState<number | null>(null)
+  const [logPage, setLogPage] = useState(0)
+  const LOG_PAGE_SIZE = 10
 
   const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'))
   const [weight, setWeight] = useState('')
@@ -376,63 +378,92 @@ export default function WeightTab() {
       </div>
 
       {/* Weight log */}
-      {entries.length > 0 && (
-        <div className="mt-8">
-          <h2 className="mb-3 text-sm font-semibold text-fg">Log</h2>
-          <div className="space-y-2">
-            {[...entries].reverse().map((entry) => {
-              const isConfirming = deletingId === entry.id
-              return (
-                <div
-                  key={entry.id}
-                  className="flex items-center justify-between rounded-xl border border-card-border bg-card px-4 py-3"
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-baseline gap-3">
-                      <span className="text-sm font-medium text-fg">
-                        {format(parseISO(entry.logged_date), 'dd/MM/yyyy')}
-                      </span>
-                      <span className="text-sm font-bold text-teal">{entry.weight_kg} kg</span>
-                    </div>
-                    {entry.notes && (
-                      <p className="mt-0.5 truncate text-xs text-dim">{entry.notes}</p>
-                    )}
-                  </div>
-                  <div className="ml-3 flex-shrink-0">
-                    {isConfirming ? (
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          onClick={() => deleteEntry(entry.id)}
-                          className="rounded-lg bg-red-600 px-2.5 py-1 text-[11px] font-medium text-white transition-opacity hover:opacity-90"
-                        >
-                          Delete
-                        </button>
-                        <button
-                          onClick={() => setDeletingId(null)}
-                          className="rounded-lg border border-card-border px-2.5 py-1 text-[11px] font-medium text-secondary transition-colors hover:text-fg"
-                        >
-                          Cancel
-                        </button>
+      {entries.length > 0 && (() => {
+        const reversed = [...entries].reverse()
+        const totalPages = Math.ceil(reversed.length / LOG_PAGE_SIZE)
+        const pageEntries = reversed.slice(logPage * LOG_PAGE_SIZE, (logPage + 1) * LOG_PAGE_SIZE)
+        return (
+          <div className="mt-8">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-fg">Log</h2>
+              <span className="text-xs text-dim">{entries.length} entries</span>
+            </div>
+            <div className="space-y-2">
+              {pageEntries.map((entry) => {
+                const isConfirming = deletingId === entry.id
+                return (
+                  <div
+                    key={entry.id}
+                    className="flex items-center justify-between rounded-xl border border-card-border bg-card px-4 py-3"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-baseline gap-3">
+                        <span className="text-sm font-medium text-fg">
+                          {format(parseISO(entry.logged_date), 'dd/MM/yyyy')}
+                        </span>
+                        <span className="text-sm font-bold text-teal">{entry.weight_kg} kg</span>
                       </div>
-                    ) : (
-                      <button
-                        onClick={() => setDeletingId(entry.id)}
-                        className="p-1 text-muted transition-colors hover:text-red-500"
-                        aria-label="Delete entry"
-                      >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <polyline points="3 6 5 6 21 6" />
-                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                        </svg>
-                      </button>
-                    )}
+                      {entry.notes && (
+                        <p className="mt-0.5 truncate text-xs text-dim">{entry.notes}</p>
+                      )}
+                    </div>
+                    <div className="ml-3 flex-shrink-0">
+                      {isConfirming ? (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => deleteEntry(entry.id)}
+                            className="rounded-lg bg-red-600 px-2.5 py-1 text-[11px] font-medium text-white transition-opacity hover:opacity-90"
+                          >
+                            Delete
+                          </button>
+                          <button
+                            onClick={() => setDeletingId(null)}
+                            className="rounded-lg border border-card-border px-2.5 py-1 text-[11px] font-medium text-secondary transition-colors hover:text-fg"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setDeletingId(entry.id)}
+                          className="p-1 text-muted transition-colors hover:text-red-500"
+                          aria-label="Delete entry"
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <polyline points="3 6 5 6 21 6" />
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              )
-            })}
+                )
+              })}
+            </div>
+            {totalPages > 1 && (
+              <div className="mt-4 flex items-center justify-center gap-3">
+                <button
+                  onClick={() => setLogPage((p) => Math.max(0, p - 1))}
+                  disabled={logPage === 0}
+                  className="rounded-lg border border-card-border px-3 py-1.5 text-xs font-semibold text-secondary transition-colors hover:text-fg disabled:opacity-30 disabled:hover:text-secondary"
+                >
+                  Prev
+                </button>
+                <span className="text-xs text-dim">
+                  {logPage + 1} / {totalPages}
+                </span>
+                <button
+                  onClick={() => setLogPage((p) => Math.min(totalPages - 1, p + 1))}
+                  disabled={logPage >= totalPages - 1}
+                  className="rounded-lg border border-card-border px-3 py-1.5 text-xs font-semibold text-secondary transition-colors hover:text-fg disabled:opacity-30 disabled:hover:text-secondary"
+                >
+                  Next
+                </button>
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        )
+      })()}
     </div>
   )
 }
