@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback, useLayoutEffect } from 'react'
 import { format, subDays, parseISO } from 'date-fns'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../lib/auth'
@@ -24,6 +24,117 @@ const RANGES: { key: RangeKey; label: string; days: number | null }[] = [
   { key: '90d', label: '90D', days: 90 },
   { key: 'all', label: 'All', days: null },
 ]
+
+/**
+ * Label card for the selected chart point. Self-measures via useLayoutEffect so
+ * the surrounding SVG foreignObject is sized exactly to its rendered content,
+ * preventing long notes from being clipped.
+ */
+function NoteLabel({
+  viewBox,
+  weight,
+  dateLabel,
+  note,
+}: {
+  viewBox: { x: number; y: number; width?: number; height?: number }
+  weight: number
+  dateLabel: string
+  note: string
+}) {
+  const divRef = useRef<HTMLDivElement>(null)
+  const [measured, setMeasured] = useState<{ w: number; h: number }>({
+    w: 240,
+    h: 70,
+  })
+  // Bounds of the enclosing <svg> in SVG user coordinates, so we can clamp the
+  // card horizontally/vertically and avoid being clipped at the chart edges.
+  const [svgBounds, setSvgBounds] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
+
+  useLayoutEffect(() => {
+    if (!divRef.current) return
+    const rect = divRef.current.getBoundingClientRect()
+    const w = Math.ceil(rect.width)
+    const h = Math.ceil(rect.height)
+    if (w !== measured.w || h !== measured.h) {
+      setMeasured({ w, h })
+    }
+    const svg = divRef.current.closest('svg') as SVGSVGElement | null
+    if (svg) {
+      const sRect = svg.getBoundingClientRect()
+      const sw = Math.floor(sRect.width)
+      const sh = Math.floor(sRect.height)
+      if (sw !== svgBounds.w || sh !== svgBounds.h) {
+        setSvgBounds({ w: sw, h: sh })
+      }
+    }
+  }, [weight, dateLabel, note, measured.w, measured.h, svgBounds.w, svgBounds.h, viewBox.x, viewBox.y])
+
+  // Clamp horizontally so the card stays inside the chart SVG.
+  const PAD = 8
+  let x = viewBox.x - measured.w / 2
+  if (svgBounds.w > 0) {
+    const maxX = svgBounds.w - measured.w - PAD
+    if (x > maxX) x = maxX
+    if (x < PAD) x = PAD
+  }
+
+  // Place the card above the dot when there's room, otherwise below, and
+  // clamp to the SVG's vertical bounds.
+  let y: number
+  const above = viewBox.y > measured.h + 18
+  y = above ? viewBox.y - measured.h - 14 : viewBox.y + 14
+  if (svgBounds.h > 0) {
+    const maxY = svgBounds.h - measured.h - PAD
+    if (y > maxY) y = maxY
+    if (y < PAD) y = PAD
+  }
+
+  // foreignObject is always sized to the measured content so nothing is clipped.
+  return (
+    <foreignObject
+      x={x}
+      y={y}
+      width={measured.w}
+      height={measured.h}
+      style={{ overflow: 'visible', pointerEvents: 'none' }}
+    >
+      <div
+        ref={divRef}
+        style={{
+          display: 'inline-block',
+          maxWidth: 260,
+          minWidth: 140,
+          borderRadius: 8,
+          border: '1px solid #00D4C8',
+          background: 'var(--color-tooltip-bg)',
+          color: 'var(--color-fg)',
+          padding: '8px 12px',
+          fontSize: 12,
+          boxShadow: '0 4px 12px rgba(0,0,0,0.35)',
+          lineHeight: 1.4,
+          pointerEvents: 'none',
+          boxSizing: 'border-box',
+        }}
+      >
+        <div style={{ fontWeight: 600 }}>{weight} kg</div>
+        <div style={{ fontSize: 11, opacity: 0.7 }}>{dateLabel}</div>
+        {note && (
+          <div
+            style={{
+              marginTop: 4,
+              fontSize: 11,
+              opacity: 0.85,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+            }}
+          >
+            {note}
+          </div>
+        )}
+      </div>
+    </foreignObject>
+  )
+}
 
 /** Pick a visually pleasant tick step for the given data span */
 function niceStep(span: number): number {
@@ -336,7 +447,7 @@ export default function WeightTab() {
               step="0.1"
               value={weight}
               onChange={(e) => setWeight(e.target.value)}
-              placeholder="82.5"
+              placeholder={entries.length > 0 ? String(entries[entries.length - 1].weight_kg) : '82.5'}
               required
               className="w-full max-w-full rounded-lg border border-card-border bg-bg px-3 py-2.5 text-sm text-fg placeholder-dim outline-none focus:border-teal focus:ring-1 focus:ring-teal"
             />
@@ -434,6 +545,12 @@ export default function WeightTab() {
                     content={({ active, payload }) => {
                       if (!active || !payload?.length) return null
                       const d = payload[0].payload
+                      // If this point is the currently selected one, the
+                      // ReferenceDot label already shows its info — don't
+                      // render a second popup on top of it.
+                      if (selectedChartPoint && d.fullDate === selectedChartPoint.fullDate) {
+                        return null
+                      }
                       return (
                         <div
                           style={{
@@ -474,55 +591,13 @@ export default function WeightTab() {
                       isFront
                       label={({ viewBox }: any) => {
                         if (!viewBox) return <g />
-                        const note = selectedChartPoint.notes ?? ''
-                        const cardW = 220
-                        const noteLines = note ? Math.ceil(note.length / 28) : 0
-                        const cardH = 52 + noteLines * 16
-                        const above = viewBox.y > cardH + 18
-                        const y = above ? viewBox.y - cardH - 14 : viewBox.y + 14
-                        const x = viewBox.x - cardW / 2
                         return (
-                          <foreignObject
-                            x={x}
-                            y={y}
-                            width={cardW}
-                            height={cardH}
-                            style={{ overflow: 'visible', pointerEvents: 'none' }}
-                          >
-                            <div
-                              style={{
-                                borderRadius: 8,
-                                border: '1px solid #00D4C8',
-                                background: 'var(--color-tooltip-bg)',
-                                color: 'var(--color-fg)',
-                                padding: '6px 10px',
-                                fontSize: 12,
-                                boxShadow: '0 4px 12px rgba(0,0,0,0.35)',
-                                lineHeight: 1.3,
-                                pointerEvents: 'none',
-                              }}
-                            >
-                              <div style={{ fontWeight: 600 }}>
-                                {selectedChartPoint.weight_kg} kg
-                              </div>
-                              <div style={{ fontSize: 11, opacity: 0.7 }}>
-                                {format(parseISO(selectedChartPoint.fullDate), 'dd/MM/yyyy')}
-                              </div>
-                              {note && (
-                                <div
-                                  style={{
-                                    marginTop: 2,
-                                    fontSize: 11,
-                                    opacity: 0.85,
-                                    whiteSpace: 'normal',
-                                    wordBreak: 'break-word',
-                                  }}
-                                >
-                                  {note}
-                                </div>
-                              )}
-                            </div>
-                          </foreignObject>
+                          <NoteLabel
+                            viewBox={viewBox}
+                            weight={selectedChartPoint.weight_kg}
+                            dateLabel={format(parseISO(selectedChartPoint.fullDate), 'dd/MM/yyyy')}
+                            note={selectedChartPoint.notes ?? ''}
+                          />
                         )
                       }}
                     />
