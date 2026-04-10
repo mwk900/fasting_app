@@ -1,9 +1,13 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { format } from 'date-fns'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../lib/auth'
 import type { Fast } from '../../types'
+
+const LONG_FAST_THRESHOLD_MINUTES = 20 * 60
+
+type FastCategory = 'long' | 'overnight'
 
 function formatDuration(minutes: number): string {
   const h = Math.floor(minutes / 60)
@@ -19,6 +23,19 @@ export default function HistoryTab() {
   const [error, setError] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [deletingId, setDeletingId] = useState<number | null>(null)
+  const [category, setCategory] = useState<FastCategory>('long')
+
+  const { longFasts, overnightFasts } = useMemo(() => {
+    const longFasts: Fast[] = []
+    const overnightFasts: Fast[] = []
+    for (const f of fasts) {
+      if (f.duration_minutes > LONG_FAST_THRESHOLD_MINUTES) longFasts.push(f)
+      else overnightFasts.push(f)
+    }
+    return { longFasts, overnightFasts }
+  }, [fasts])
+
+  const visibleFasts = category === 'long' ? longFasts : overnightFasts
 
   useEffect(() => {
     if (user) fetchFasts()
@@ -64,8 +81,50 @@ export default function HistoryTab() {
       {fasts.length === 0 ? (
         <p className="py-20 text-center text-muted">No fasts logged yet.</p>
       ) : (
+        <>
+          <div className="mb-4 grid grid-cols-2 gap-2 rounded-xl border border-card-border bg-card p-1">
+            {([
+              { id: 'long' as const, label: 'Long fast', count: longFasts.length },
+              { id: 'overnight' as const, label: 'Overnight', count: overnightFasts.length },
+            ]).map((opt) => {
+              const isActive = category === opt.id
+              return (
+                <button
+                  key={opt.id}
+                  onClick={() => {
+                    setCategory(opt.id)
+                    setExpandedId(null)
+                    setDeletingId(null)
+                  }}
+                  className={`relative rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                    isActive ? 'text-white' : 'text-muted hover:text-fg'
+                  }`}
+                >
+                  {isActive && (
+                    <motion.div
+                      layoutId="history-category-indicator"
+                      className="absolute inset-0 rounded-lg bg-teal"
+                      transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                    />
+                  )}
+                  <span className="relative">
+                    {opt.label}
+                    <span className={`ml-1.5 text-xs ${isActive ? 'text-white/80' : 'text-muted'}`}>
+                      {opt.count}
+                    </span>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+
+          {visibleFasts.length === 0 ? (
+            <p className="py-20 text-center text-muted">
+              No {category === 'long' ? 'long fasts' : 'overnight fasts'} logged yet.
+            </p>
+          ) : (
         <div className="space-y-3">
-          {fasts.map((fast, i) => {
+          {visibleFasts.map((fast, i) => {
             const isExpanded = expandedId === fast.id
             const isConfirmingDelete = deletingId === fast.id
 
@@ -173,6 +232,8 @@ export default function HistoryTab() {
             )
           })}
         </div>
+          )}
+        </>
       )}
     </div>
   )
