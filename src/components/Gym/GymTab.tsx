@@ -1274,15 +1274,15 @@ export default function GymTab() {
                     className="rounded-lg border border-card-border px-3 py-2 text-sm text-muted">No</button>
                 </form>
               )}
-              <div className="mb-5 flex items-center gap-4">
+              <div className="mb-5 flex items-center gap-2">
                 {!showAddMidWorkout && (
                   <button onClick={() => setShowAddMidWorkout(true)}
-                    className="text-xs font-medium text-muted transition-colors hover:text-fg">
+                    className="flex-1 basis-1/2 rounded-lg border border-card-border bg-card px-3 py-2.5 text-xs font-medium text-muted transition-colors hover:border-teal/50 hover:text-fg">
                     + Add New Exercise
                   </button>
                 )}
                 <button onClick={() => { setShowExList((v) => !v); setDeletingExId(null) }}
-                  className="text-xs font-medium text-muted transition-colors hover:text-fg">
+                  className="flex-1 basis-1/2 rounded-lg border border-card-border bg-card px-3 py-2.5 text-xs font-medium text-muted transition-colors hover:border-teal/50 hover:text-fg">
                   {showExList ? 'Hide Exercise List' : 'Exercise List'}
                 </button>
               </div>
