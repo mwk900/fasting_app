@@ -72,7 +72,10 @@ const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
 
 export default function TabBar({ activeTab, onTabChange }: Props) {
   return (
-    <nav className="fixed bottom-0 left-0 right-0 border-t border-card-border bg-bg/95 backdrop-blur-sm transition-colors duration-300">
+    <nav
+      className="fixed bottom-0 left-0 right-0 border-t border-card-border bg-bg/95 backdrop-blur-sm transition-colors duration-300"
+      style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 1.25rem)' }}
+    >
       <div className="mx-auto flex max-w-lg">
         {tabs.map((tab) => {
           const isActive = activeTab === tab.id
@@ -80,7 +83,7 @@ export default function TabBar({ activeTab, onTabChange }: Props) {
             <button
               key={tab.id}
               onClick={() => onTabChange(tab.id)}
-              className={`relative flex flex-1 flex-col items-center gap-0.5 pb-5 pt-2 transition-colors ${
+              className={`relative flex flex-1 flex-col items-center gap-0.5 pb-2 pt-2.5 transition-colors ${
                 isActive ? 'text-teal' : 'text-muted'
               }`}
             >

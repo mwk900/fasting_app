@@ -89,7 +89,10 @@ export default function App() {
     <GymSessionProvider>
     <div className="min-h-screen bg-bg font-sans transition-colors duration-300">
       <GymIsland onOpen={() => setActiveTab('gym')} />
-      <div className="fixed right-4 top-4 z-30 flex items-center gap-2">
+      <div
+        className="fixed right-4 z-30 flex items-center gap-2"
+        style={{ top: 'calc(env(safe-area-inset-top) + 0.75rem)' }}
+      >
         <button
           onClick={toggleTheme}
           className="rounded-full bg-card p-2.5 text-muted shadow-lg border border-card-border transition-colors hover:text-fg"
@@ -116,7 +119,10 @@ export default function App() {
       </div>
 
       {activeTab === 'timer' && (
-        <div className="fixed inset-x-0 bottom-24 z-30 flex justify-center px-4">
+        <div
+          className="fixed inset-x-0 z-30 flex justify-center px-4"
+          style={{ bottom: 'calc(env(safe-area-inset-bottom) + 6rem)' }}
+        >
           <button
             onClick={signOut}
             className="rounded-full bg-card px-4 py-2 text-xs font-medium text-muted shadow-lg border border-card-border transition-colors hover:text-fg"
@@ -126,7 +132,13 @@ export default function App() {
         </div>
       )}
 
-      <main className="mx-auto max-w-lg px-4 pb-28 pt-6">
+      <main
+        className="mx-auto max-w-lg px-4"
+        style={{
+          paddingTop: 'calc(env(safe-area-inset-top) + 3.75rem)',
+          paddingBottom: 'calc(env(safe-area-inset-bottom) + 7rem)',
+        }}
+      >
         <AnimatePresence mode="wait">
           <motion.div
             key={activeTab}

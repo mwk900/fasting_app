@@ -46,7 +46,10 @@ export default function GymIsland({ onOpen, hidden }: { onOpen: () => void; hidd
   }
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 top-4 z-40 flex justify-center px-4">
+    <div
+      className="pointer-events-none fixed inset-x-0 z-40 flex justify-center px-4"
+      style={{ top: 'calc(env(safe-area-inset-top) + 0.75rem)' }}
+    >
       <div className="mx-auto flex w-full max-w-lg justify-center">
         <AnimatePresence>
           {visible && (
