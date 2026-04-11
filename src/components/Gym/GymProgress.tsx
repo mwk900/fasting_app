@@ -4,6 +4,7 @@ import { format, parseISO } from 'date-fns'
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts'
+import ScreenLoader from '../ScreenLoader'
 import { supabase } from '../../lib/supabase'
 import type { WorkoutType } from '../../types'
 import { useGymSession } from '../../lib/gymSession'
@@ -25,10 +26,23 @@ interface Props {
   onBack: () => void
 }
 
+interface ProgressSetRow {
+  exercise_id: number
+  weight_kg: number
+  reps: number
+  exercises: { id: number; name: string } | null
+}
+
+interface ProgressSessionRow {
+  id: number
+  completed_at: string | null
+  workout_sets: ProgressSetRow[] | null
+}
+
 /* ─── Component ───────────────────────────────────────────────────── */
 
 export default function GymProgress({ userId, onBack }: Props) {
-  const { categories } = useGymSession()
+  const { categories, categoriesLoading } = useGymSession()
   const strengthCategories = categories.filter((c) => !c.is_cardio)
   const TYPE_COLORS: Record<string, string> = {}
   const TYPE_LABELS: Record<string, string> = {}
@@ -50,28 +64,7 @@ export default function GymProgress({ userId, onBack }: Props) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetchProgress(type)
-  }, [type])
-
-  async function fetchProgress(wType: WorkoutType) {
-    setLoading(true)
-
-    // Fetch sessions with nested sets + exercise names in one query
-    const { data: sessions, error: err } = await supabase
-      .from('workout_sessions')
-      .select(`
-        id, completed_at,
-        workout_sets (
-          exercise_id, weight_kg, reps,
-          exercises (id, name)
-        )
-      `)
-      .eq('user_id', userId)
-      .eq('workout_type', wType)
-      .not('completed_at', 'is', null)
-      .order('completed_at', { ascending: true })
-
-    if (err || !sessions || sessions.length === 0) {
+    if (!userId) {
       setExercises([])
       setVolumeTrend([])
       setTotalWorkouts(0)
@@ -79,68 +72,115 @@ export default function GymProgress({ userId, onBack }: Props) {
       return
     }
 
-    setTotalWorkouts(sessions.length)
-
-    // Build per-exercise data
-    const exMap = new Map<number, {
-      name: string
-      sessions: Map<string, { maxWeight: number; volume: number }>
-    }>()
-
-    const volTrend: { date: string; fullDate: string; volume: number }[] = []
-
-    for (const session of sessions) {
-      const dateStr = format(parseISO(session.completed_at!), 'dd/MM')
-      const fullDate = session.completed_at!
-      let sessionVolume = 0
-
-      for (const set of (session.workout_sets as any[]) ?? []) {
-        const exId = set.exercise_id as number
-        const weight = Number(set.weight_kg)
-        const reps = set.reps as number
-        const exName = (set.exercises as any)?.name ?? 'Unknown'
-
-        if (!exMap.has(exId)) {
-          exMap.set(exId, { name: exName, sessions: new Map() })
-        }
-
-        const exData = exMap.get(exId)!
-        if (!exData.sessions.has(fullDate)) {
-          exData.sessions.set(fullDate, { maxWeight: 0, volume: 0 })
-        }
-        const sData = exData.sessions.get(fullDate)!
-        sData.maxWeight = Math.max(sData.maxWeight, weight)
-        sData.volume += weight * reps
-        sessionVolume += weight * reps
-      }
-
-      volTrend.push({ date: dateStr, fullDate, volume: Math.round(sessionVolume) })
+    if (categoriesLoading) return
+    if (!type) {
+      setExercises([])
+      setVolumeTrend([])
+      setTotalWorkouts(0)
+      setLoading(false)
+      return
     }
 
-    setVolumeTrend(volTrend)
+    let cancelled = false
 
-    // Convert exercise map to sorted array
-    const progressExercises: ProgressExercise[] = Array.from(exMap.entries()).map(([id, data]) => {
-      const dataPoints = Array.from(data.sessions.entries())
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([fd, stats]) => ({
-          date: format(parseISO(fd), 'dd/MM'),
-          fullDate: fd,
-          maxWeight: stats.maxWeight,
-          totalVolume: Math.round(stats.volume),
-        }))
+    async function loadProgress() {
+      setLoading(true)
 
-      const first = dataPoints[0]?.maxWeight ?? 0
-      const latest = dataPoints[dataPoints.length - 1]?.maxWeight ?? 0
-      const best = dataPoints.length > 0 ? Math.max(...dataPoints.map((d) => d.maxWeight)) : 0
-      const pct = first > 0 ? ((latest - first) / first) * 100 : 0
+      const { data: sessions, error: err } = await supabase
+        .from('workout_sessions')
+        .select(`
+          id, completed_at,
+          workout_sets (
+            exercise_id, weight_kg, reps,
+            exercises (id, name)
+          )
+        `)
+        .eq('user_id', userId)
+        .eq('workout_type', type)
+        .not('completed_at', 'is', null)
+        .order('completed_at', { ascending: true })
 
-      return { id, name: data.name, dataPoints, firstMaxWeight: first, latestMaxWeight: latest, bestMaxWeight: best, percentChange: pct }
-    })
+      if (cancelled) return
 
-    setExercises(progressExercises)
-    setLoading(false)
-  }
+      const sessionRows = (sessions as ProgressSessionRow[] | null) ?? null
+
+      if (err || !sessionRows || sessionRows.length === 0) {
+        setExercises([])
+        setVolumeTrend([])
+        setTotalWorkouts(0)
+        setLoading(false)
+        return
+      }
+
+      setTotalWorkouts(sessionRows.length)
+
+      const exMap = new Map<number, {
+        name: string
+        sessions: Map<string, { maxWeight: number; volume: number }>
+      }>()
+
+      const volTrend: { date: string; fullDate: string; volume: number }[] = []
+
+      for (const session of sessionRows) {
+        if (!session.completed_at) continue
+
+        const dateStr = format(parseISO(session.completed_at), 'dd/MM')
+        const fullDate = session.completed_at
+        let sessionVolume = 0
+
+        for (const set of session.workout_sets ?? []) {
+          const exId = set.exercise_id
+          const weight = Number(set.weight_kg)
+          const reps = set.reps
+          const exName = set.exercises?.name ?? 'Unknown'
+
+          if (!exMap.has(exId)) {
+            exMap.set(exId, { name: exName, sessions: new Map() })
+          }
+
+          const exData = exMap.get(exId)!
+          if (!exData.sessions.has(fullDate)) {
+            exData.sessions.set(fullDate, { maxWeight: 0, volume: 0 })
+          }
+          const sData = exData.sessions.get(fullDate)!
+          sData.maxWeight = Math.max(sData.maxWeight, weight)
+          sData.volume += weight * reps
+          sessionVolume += weight * reps
+        }
+
+        volTrend.push({ date: dateStr, fullDate, volume: Math.round(sessionVolume) })
+      }
+
+      setVolumeTrend(volTrend)
+
+      const progressExercises: ProgressExercise[] = Array.from(exMap.entries()).map(([id, data]) => {
+        const dataPoints = Array.from(data.sessions.entries())
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([fd, stats]) => ({
+            date: format(parseISO(fd), 'dd/MM'),
+            fullDate: fd,
+            maxWeight: stats.maxWeight,
+            totalVolume: Math.round(stats.volume),
+          }))
+
+        const first = dataPoints[0]?.maxWeight ?? 0
+        const latest = dataPoints[dataPoints.length - 1]?.maxWeight ?? 0
+        const best = dataPoints.length > 0 ? Math.max(...dataPoints.map((d) => d.maxWeight)) : 0
+        const pct = first > 0 ? ((latest - first) / first) * 100 : 0
+
+        return { id, name: data.name, dataPoints, firstMaxWeight: first, latestMaxWeight: latest, bestMaxWeight: best, percentChange: pct }
+      })
+
+      setExercises(progressExercises)
+      setLoading(false)
+    }
+
+    void loadProgress()
+
+    return () => {
+      cancelled = true
+    }
+  }, [categoriesLoading, type, userId])
 
   const color = TYPE_COLORS[type] ?? '#00D4C8'
   const totalVol = volumeTrend.reduce((s, d) => s + d.volume, 0)
@@ -171,10 +211,8 @@ export default function GymProgress({ userId, onBack }: Props) {
         })}
       </div>
 
-      {loading ? (
-        <div className="flex h-40 items-center justify-center">
-          <div className="h-6 w-6 animate-spin rounded-full border-2 border-teal border-t-transparent" />
-        </div>
+      {loading || categoriesLoading ? (
+        <ScreenLoader minHeightClass="h-40" />
       ) : exercises.length === 0 ? (
         <p className="py-16 text-center text-muted">Complete your first {TYPE_LABELS[type]} workout to see progress.</p>
       ) : (

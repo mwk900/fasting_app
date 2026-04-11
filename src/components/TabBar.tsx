@@ -75,6 +75,7 @@ export default function TabBar({ activeTab, onTabChange }: Props) {
     <nav
       className="fixed bottom-0 left-0 right-0 border-t border-card-border bg-bg/95 backdrop-blur-sm transition-colors duration-300"
       style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 1.25rem)' }}
+      aria-label="Primary navigation"
     >
       <div className="mx-auto flex max-w-lg">
         {tabs.map((tab) => {
@@ -83,9 +84,12 @@ export default function TabBar({ activeTab, onTabChange }: Props) {
             <button
               key={tab.id}
               onClick={() => onTabChange(tab.id)}
+              type="button"
               className={`relative flex flex-1 flex-col items-center gap-0.5 pb-2 pt-2.5 transition-colors ${
                 isActive ? 'text-teal' : 'text-muted'
               }`}
+              aria-current={isActive ? 'page' : undefined}
+              aria-label={tab.label}
             >
               {isActive && (
                 <motion.div

@@ -37,6 +37,12 @@ const FIELD_COLORS: Record<string, string> = {
   body_fat_pct: '#F97316',
 }
 
+interface MeasurementTooltipItem {
+  dataKey?: string | number
+  value?: unknown
+  color?: string
+}
+
 export default function MeasurementsTab() {
   const { user } = useAuth()
   const [entries, setEntries] = useState<Measurement[]>([])
@@ -59,11 +65,12 @@ export default function MeasurementsTab() {
   }, [user])
 
   async function fetchEntries() {
+    if (!user) return
     setError(null)
     const { data, error: err } = await supabase
       .from('measurements')
       .select('*')
-      .eq('user_id', user!.id)
+      .eq('user_id', user.id)
       .order('logged_date', { ascending: false })
     if (err) { setError('Failed to load measurements'); setLoading(false); return }
     setEntries(data ?? [])
@@ -76,6 +83,7 @@ export default function MeasurementsTab() {
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault()
+    if (!user) return
     setSaving(true)
     setError(null)
 
@@ -85,7 +93,7 @@ export default function MeasurementsTab() {
       row[f.key] = v ? parseFloat(v) : null
     }
 
-    row.user_id = user!.id
+    row.user_id = user.id
     const { error: err } = await supabase.from('measurements').insert(row)
     if (err) { setError('Failed to save measurement'); setSaving(false); return }
 
@@ -220,6 +228,7 @@ export default function MeasurementsTab() {
           <div className="mb-3 flex flex-wrap gap-2">
             <button
               onClick={toggleAllFields}
+              type="button"
               className="rounded-lg border border-card-border px-2.5 py-1 text-[11px] font-semibold text-secondary transition-colors hover:text-fg"
             >
               {visibleFields.size === FIELDS.length ? 'Deselect All' : 'Select All'}
@@ -228,7 +237,9 @@ export default function MeasurementsTab() {
               <button
                 key={f.key}
                 onClick={() => toggleField(f.key)}
+                type="button"
                 className="rounded-lg px-2.5 py-1 text-[11px] font-semibold transition-colors"
+                aria-pressed={visibleFields.has(f.key)}
                 style={{
                   backgroundColor: visibleFields.has(f.key)
                     ? FIELD_COLORS[f.key] + '22'
@@ -270,6 +281,7 @@ export default function MeasurementsTab() {
                 content={({ active, payload, label }) => {
                   if (!active || !payload?.length) return null
                   const d = payload[0]?.payload
+                  const tooltipItems = payload as MeasurementTooltipItem[]
                   return (
                     <div
                       style={{
@@ -285,13 +297,14 @@ export default function MeasurementsTab() {
                       <p className="mb-1 text-xs text-secondary">
                         {d?.fullDate ? format(parseISO(d.fullDate), 'dd/MM/yyyy') : label}
                       </p>
-                      {payload
-                        .filter((p: any) => p.value != null)
-                        .map((p: any) => {
+                      {tooltipItems
+                        .filter((p: MeasurementTooltipItem) => p.value != null)
+                        .map((p: MeasurementTooltipItem) => {
                           const field = FIELDS.find((f) => f.key === p.dataKey)
+                          const value = typeof p.value === 'number' ? p.value : Number(p.value ?? 0)
                           return (
                             <p key={p.dataKey} style={{ color: p.color }} className="text-xs font-medium">
-                              {field?.label}: {p.value > 0 ? '+' : ''}{p.value}%
+                              {field?.label}: {value > 0 ? '+' : ''}{value}%
                             </p>
                           )
                         })}
@@ -365,12 +378,14 @@ export default function MeasurementsTab() {
                             <div className="flex items-center gap-1.5">
                               <button
                                 onClick={() => deleteEntry(m.id)}
+                                type="button"
                                 className="rounded-lg bg-red-600 px-2.5 py-1 text-[11px] font-medium text-white transition-opacity hover:opacity-90"
                               >
                                 Delete
                               </button>
                               <button
                                 onClick={() => setDeletingId(null)}
+                                type="button"
                                 className="rounded-lg border border-card-border px-2.5 py-1 text-[11px] font-medium text-secondary transition-colors hover:text-fg"
                               >
                                 Cancel
@@ -379,6 +394,7 @@ export default function MeasurementsTab() {
                           ) : (
                             <button
                               onClick={() => setDeletingId(m.id)}
+                              type="button"
                               className="p-1 text-muted transition-colors hover:text-red-500"
                               aria-label="Delete entry"
                             >
@@ -398,6 +414,7 @@ export default function MeasurementsTab() {
                 <div className="mt-4 flex items-center justify-center gap-3">
                   <button
                     onClick={() => setLogPage((p) => Math.max(0, p - 1))}
+                    type="button"
                     disabled={logPage === 0}
                     className="rounded-lg border border-card-border px-3 py-1.5 text-xs font-semibold text-secondary transition-colors hover:text-fg disabled:opacity-30 disabled:hover:text-secondary"
                   >
@@ -408,6 +425,7 @@ export default function MeasurementsTab() {
                   </span>
                   <button
                     onClick={() => setLogPage((p) => Math.min(totalPages - 1, p + 1))}
+                    type="button"
                     disabled={logPage >= totalPages - 1}
                     className="rounded-lg border border-card-border px-3 py-1.5 text-xs font-semibold text-secondary transition-colors hover:text-fg disabled:opacity-30 disabled:hover:text-secondary"
                   >

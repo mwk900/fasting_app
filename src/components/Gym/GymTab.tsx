@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { format, formatDistanceToNow, parseISO } from 'date-fns'
 import { supabase } from '../../lib/supabase'
@@ -6,6 +6,7 @@ import { useAuth } from '../../lib/auth'
 import { useGymSession } from '../../lib/gymSession'
 import GymProgress from './GymProgress'
 import DateInput from '../DateInput'
+import ScreenLoader from '../ScreenLoader'
 import type { Exercise, WorkoutCategory, WorkoutSession, WorkoutType } from '../../types'
 import { createCategory, updateCategory, deleteCategory, CATEGORY_PALETTE } from '../../lib/workoutCategories'
 
@@ -86,6 +87,7 @@ interface PersistedWorkoutState {
   sessionSets: Record<number, LocalSet[]>
   prevSets: Record<number, LocalSet[]>
   workoutStart: string
+  workoutEnd: string | null
   isFasted: boolean
   skippedExercises: number[]
   workoutNotes: string
@@ -95,15 +97,17 @@ interface PersistedWorkoutState {
 
 export default function GymTab() {
   const { user } = useAuth()
-  const { setActiveSession, categories, setCategories } = useGymSession()
+  const { setActiveSession, categories, categoriesLoading, setCategories } = useGymSession()
 
   /* Derived category helpers */
-  const categoryByKey: Record<string, WorkoutCategory> = {}
-  for (const c of categories) categoryByKey[c.key] = c
-  const strengthCategories = categories.filter((c) => !c.is_cardio)
-  const cardioCategory = categories.find((c) => c.is_cardio)
+  const categoryByKey = useMemo<Record<string, WorkoutCategory>>(() => {
+    const next: Record<string, WorkoutCategory> = {}
+    for (const c of categories) next[c.key] = c
+    return next
+  }, [categories])
+  const strengthCategories = useMemo(() => categories.filter((c) => !c.is_cardio), [categories])
+  const cardioCategory = useMemo(() => categories.find((c) => c.is_cardio), [categories])
   const cardioKey = cardioCategory?.key ?? 'cardio'
-  const allKeys = categories.map((c) => c.key)
   const metaFor = (key: WorkoutType) => metaFromCategory(categoryByKey[key])
   const isCardioKey = (key: WorkoutType) => categoryByKey[key]?.is_cardio === true || key === cardioKey
 
@@ -142,6 +146,7 @@ export default function GymTab() {
   const [sessionSets, setSessionSets] = useState<Record<number, LocalSet[]>>({})
   const [prevSets, setPrevSets] = useState<Record<number, LocalSet[]>>({})
   const [workoutStart, setWorkoutStart] = useState<Date | null>(null)
+  const [workoutEnd, setWorkoutEnd] = useState<string | null>(null)
   const [animDir, setAnimDir] = useState<'next' | 'prev'>('next')
   const [confirmCancel, setConfirmCancel] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -171,16 +176,10 @@ export default function GymTab() {
 
   useEffect(() => {
     if (user) {
-      fetchExercises()
-      fetchRecentWorkouts()
+      void fetchExercises()
+      void refreshWorkoutHistory()
     }
   }, [user])
-
-  useEffect(() => {
-    if (user && categories.length > 0) {
-      fetchLastSessions()
-    }
-  }, [user, categories.length])
 
   /* Rehydrate in-progress workout from localStorage once exercises load */
   useEffect(() => {
@@ -202,16 +201,21 @@ export default function GymTab() {
       setSessionSets(s.sessionSets ?? {})
       setPrevSets(s.prevSets ?? {})
       setWorkoutStart(new Date(s.workoutStart))
+      setWorkoutEnd(s.workoutEnd ?? null)
       setIsFasted(!!s.isFasted)
       setSkippedExercises(new Set(s.skippedExercises ?? []))
       setWorkoutNotes(s.workoutNotes ?? '')
       setWorkoutDate(s.workoutDate ?? format(new Date(), 'yyyy-MM-dd'))
       setScreen(s.screen === 'complete' ? 'complete' : 'workout')
-      setActiveSession({
-        sessionId: s.sessionId,
-        workoutType: s.selectedType,
-        startedAt: s.workoutStart,
-      })
+      if (s.screen === 'workout') {
+        setActiveSession({
+          sessionId: s.sessionId,
+          workoutType: s.selectedType,
+          startedAt: s.workoutStart,
+        })
+      } else {
+        setActiveSession(null)
+      }
     } catch {
       localStorage.removeItem(WORKOUT_STATE_KEY)
     }
@@ -229,6 +233,7 @@ export default function GymTab() {
       sessionSets,
       prevSets,
       workoutStart: workoutStart.toISOString(),
+      workoutEnd,
       isFasted,
       skippedExercises: Array.from(skippedExercises),
       workoutNotes,
@@ -236,13 +241,128 @@ export default function GymTab() {
       screen,
     }
     localStorage.setItem(WORKOUT_STATE_KEY, JSON.stringify(state))
-  }, [hydrated, screen, sessionId, selectedType, exIndex, sessionSets, prevSets, workoutStart, isFasted, skippedExercises, workoutNotes, workoutDate])
+  }, [hydrated, screen, sessionId, selectedType, exIndex, sessionSets, prevSets, workoutStart, workoutEnd, isFasted, skippedExercises, workoutNotes, workoutDate])
+
+  function isSetFilled(set: LocalSet) {
+    return set.weight_kg > 0 || set.weight_kg === -1 || set.reps > 0
+  }
+
+  function getErrorMessage(error: unknown, fallback: string) {
+    if (error instanceof Error && error.message) return error.message
+    return fallback
+  }
+
+  function normalizeExerciseOrder(list: Exercise[]) {
+    return list.map((exercise, index) => ({
+      ...exercise,
+      sort_order: index,
+    }))
+  }
+
+  function formatWorkoutDuration(startIso: string, endIso: string) {
+    const startMs = new Date(startIso).getTime()
+    const endMs = new Date(endIso).getTime()
+    const mins = Math.max(0, Math.round((endMs - startMs) / 60000))
+
+    if (mins >= 60) return `${Math.floor(mins / 60)}h ${mins % 60}m`
+    return `${mins}m`
+  }
+
+  async function replaceExerciseSets(targetSessionId: number, exerciseId: number, sets: LocalSet[]) {
+    if (!user) throw new Error('You must be signed in to save workout data.')
+
+    const { error: deleteErr } = await supabase
+      .from('workout_sets')
+      .delete()
+      .eq('session_id', targetSessionId)
+      .eq('exercise_id', exerciseId)
+
+    if (deleteErr) {
+      throw new Error(deleteErr.message)
+    }
+
+    const validSets = sets.filter(isSetFilled)
+
+    if (validSets.length === 0) return
+
+    const { error: insertErr } = await supabase.from('workout_sets').insert(
+      validSets.map((set) => ({
+        user_id: user.id,
+        session_id: targetSessionId,
+        exercise_id: exerciseId,
+        set_number: set.set_number,
+        weight_kg: Math.max(0, set.weight_kg),
+        reps: set.reps,
+      })),
+    )
+
+    if (insertErr) {
+      throw new Error(insertErr.message)
+    }
+  }
+
+  async function persistExerciseOrder(workoutType: WorkoutType, list: Exercise[]) {
+    const normalized = normalizeExerciseOrder(list)
+
+    if (normalized.length > 0) {
+      const { error: orderErr } = await supabase.from('exercises').upsert(
+        normalized.map((exercise) => ({
+          id: exercise.id,
+          user_id: exercise.user_id,
+          name: exercise.name,
+          workout_type: exercise.workout_type,
+          sort_order: exercise.sort_order,
+        })),
+        { onConflict: 'id' },
+      )
+
+      if (orderErr) {
+        throw new Error(orderErr.message)
+      }
+    }
+
+    setExercises((prev) => ({ ...prev, [workoutType]: normalized }))
+    return normalized
+  }
+
+  async function completeStrengthWorkout(targetSessionId: number) {
+    const timestamps = sessionTimestamps()
+    const activeSessionSnapshot = workoutStart
+      ? {
+          sessionId: targetSessionId,
+          workoutType: selectedType,
+          startedAt: workoutStart.toISOString(),
+        }
+      : null
+
+    setActiveSession(null)
+
+    try {
+      const { error: completeErr } = await supabase
+        .from('workout_sessions')
+        .update(timestamps)
+        .eq('id', targetSessionId)
+
+      if (completeErr) throw new Error(completeErr.message)
+
+      setWorkoutEnd(timestamps.completed_at)
+      setScreen('complete')
+      void refreshWorkoutHistory()
+    } catch (error) {
+      if (activeSessionSnapshot) {
+        setActiveSession(activeSessionSnapshot)
+      }
+      throw error
+    }
+  }
 
   async function fetchExercises() {
+    if (!user) return
+
     const { data, error: err } = await supabase
       .from('exercises')
       .select('*')
-      .eq('user_id', user!.id)
+      .eq('user_id', user.id)
       .order('sort_order', { ascending: true })
 
     if (err) { setError('Failed to load exercises'); setLoading(false); return }
@@ -257,39 +377,39 @@ export default function GymTab() {
     setLoading(false)
   }
 
-  async function fetchLastSessions() {
-    if (allKeys.length === 0) return
-    const result: Record<string, WorkoutSession | null> = {}
-    const promises = allKeys.map(async (type) => {
-      const { data } = await supabase
-        .from('workout_sessions')
-        .select('*')
-        .eq('user_id', user!.id)
-        .eq('workout_type', type)
-        .not('completed_at', 'is', null)
-        .order('completed_at', { ascending: false })
-        .limit(1)
-        .single()
-      result[type] = data
-    })
-    await Promise.all(promises)
-    setLastSessions(result)
-  }
+  async function refreshWorkoutHistory() {
+    if (!user) return
 
-  async function fetchRecentWorkouts() {
-    const { data } = await supabase
+    const { data, error: err } = await supabase
       .from('workout_sessions')
       .select('*')
-      .eq('user_id', user!.id)
+      .eq('user_id', user.id)
       .not('completed_at', 'is', null)
       .order('completed_at', { ascending: false })
-    setRecentWorkouts(data ?? [])
+
+    if (err) {
+      setError((current) => current ?? 'Failed to load workout history')
+      return
+    }
+
+    const sessions = (data ?? []) as WorkoutSession[]
+    const latestByType: Record<string, WorkoutSession | null> = {}
+
+    for (const session of sessions) {
+      if (!latestByType[session.workout_type]) {
+        latestByType[session.workout_type] = session
+      }
+    }
+
+    setRecentWorkouts(sessions)
+    setLastSessions(latestByType)
   }
 
   /* ─── Exercise management ──────────────────────────────────────── */
 
   async function addExercise(e: React.FormEvent) {
     e.preventDefault()
+    if (!user) return
     if (!newExName.trim()) return
     const duplicate = (exercises[selectedType] ?? []).some(
       (ex) => ex.name.toLowerCase() === newExName.trim().toLowerCase(),
@@ -300,7 +420,7 @@ export default function GymTab() {
     const list = exercises[selectedType] ?? []
     const maxOrder = list.length > 0 ? Math.max(...list.map((x) => x.sort_order)) + 1 : 0
     const { error: err } = await supabase.from('exercises').insert({
-      user_id: user!.id,
+      user_id: user.id,
       name: newExName.trim(),
       workout_type: selectedType,
       sort_order: maxOrder,
@@ -317,11 +437,21 @@ export default function GymTab() {
   }
 
   async function deleteExercise(id: number) {
+    const list = exercises[selectedType] ?? []
+    const remaining = list.filter((exercise) => exercise.id !== id)
+
     setError(null)
-    const { error: err } = await supabase.from('exercises').delete().eq('id', id)
-    if (err) { setError('Failed to delete exercise'); return }
-    setDeletingExId(null)
-    fetchExercises()
+
+    try {
+      const { error: err } = await supabase.from('exercises').delete().eq('id', id)
+      if (err) throw new Error(err.message)
+
+      await persistExerciseOrder(selectedType, remaining)
+      setDeletingExId(null)
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to delete exercise'))
+      void fetchExercises()
+    }
   }
 
   async function moveExercise(id: number, direction: 'up' | 'down') {
@@ -330,18 +460,25 @@ export default function GymTab() {
     if (idx < 0) return
     const swapIdx = direction === 'up' ? idx - 1 : idx + 1
     if (swapIdx < 0 || swapIdx >= list.length) return
-    const orderA = list[idx].sort_order
-    const orderB = list[swapIdx].sort_order
-    await Promise.all([
-      supabase.from('exercises').update({ sort_order: orderB }).eq('id', list[idx].id),
-      supabase.from('exercises').update({ sort_order: orderA }).eq('id', list[swapIdx].id),
-    ])
-    fetchExercises()
+
+    const reordered = [...list]
+    ;[reordered[idx], reordered[swapIdx]] = [reordered[swapIdx], reordered[idx]]
+
+    setError(null)
+
+    try {
+      await persistExerciseOrder(selectedType, reordered)
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to reorder exercises'))
+      void fetchExercises()
+    }
   }
 
   /* ─── Workout flow ─────────────────────────────────────────────── */
 
   async function startWorkout(type: WorkoutType) {
+    if (!user) return
+
     const exList = exercises[type] ?? []
     if (exList.length === 0) {
       setSelectedType(type)
@@ -357,10 +494,11 @@ export default function GymTab() {
     setMidWorkoutExName('')
     setShowExList(false)
     setWorkoutDate(format(new Date(), 'yyyy-MM-dd'))
+    setWorkoutEnd(null)
 
     const { data: session, error: err } = await supabase
       .from('workout_sessions')
-      .insert({ user_id: user!.id, workout_type: type, is_fasted: false })
+      .insert({ user_id: user.id, workout_type: type, is_fasted: false })
       .select()
       .single()
     if (err || !session) { setError('Failed to start workout'); return }
@@ -370,6 +508,7 @@ export default function GymTab() {
     setConfirmCancel(false)
     const startedAt = new Date()
     setWorkoutStart(startedAt)
+    setWorkoutEnd(null)
     setActiveSession({
       sessionId: session.id,
       workoutType: type,
@@ -379,7 +518,7 @@ export default function GymTab() {
     const { data: prevSession } = await supabase
       .from('workout_sessions')
       .select('id')
-      .eq('user_id', user!.id)
+      .eq('user_id', user.id)
       .eq('workout_type', type)
       .not('completed_at', 'is', null)
       .order('completed_at', { ascending: false })
@@ -471,6 +610,7 @@ export default function GymTab() {
 
   async function addExerciseMidWorkout(e: React.FormEvent) {
     e.preventDefault()
+    if (!user) return
     if (!midWorkoutExName.trim() || savingEx) return
     const duplicate = (exercises[selectedType] ?? []).some(
       (ex) => ex.name.toLowerCase() === midWorkoutExName.trim().toLowerCase(),
@@ -478,59 +618,57 @@ export default function GymTab() {
     if (duplicate) { setError('Exercise already exists'); return }
     setSavingEx(true)
     setError(null)
-    const list = exercises[selectedType] ?? []
-    const insertIdx = exIndex + 1 // insert right after current exercise
-    const currentSortOrder = list[exIndex]?.sort_order ?? 0
+    let insertedExerciseId: number | null = null
 
-    // Shift sort_order for all exercises after the insertion point
-    const toShift = list.slice(insertIdx)
-    if (toShift.length > 0) {
-      await Promise.all(
-        toShift.map((ex) =>
-          supabase.from('exercises').update({ sort_order: ex.sort_order + 1 }).eq('id', ex.id)
-        )
-      )
-    }
+    try {
+      const list = exercises[selectedType] ?? []
+      const insertIdx = exIndex + 1
 
-    const { data: newEx, error: err } = await supabase
-      .from('exercises')
-      .insert({
-        user_id: user!.id, name: midWorkoutExName.trim(),
-        workout_type: selectedType, sort_order: currentSortOrder + 1,
-      })
-      .select().single()
-    if (err || !newEx) { setError('Failed to add exercise'); setSavingEx(false); return }
-    // Save current exercise sets before jumping
-    const curEx = currentExercise()
-    if (curEx && sessionId) {
-      const sets = sessionSets[curEx.id] ?? []
-      const valid = sets.filter((s) => s.weight_kg > 0 || s.weight_kg === -1 || s.reps > 0)
-      if (valid.length > 0) {
-        await supabase.from('workout_sets').delete().eq('session_id', sessionId).eq('exercise_id', curEx.id)
-        await supabase.from('workout_sets').insert(
-          valid.map((s) => ({
-            user_id: user!.id, session_id: sessionId, exercise_id: curEx.id,
-            set_number: s.set_number, weight_kg: Math.max(0, s.weight_kg), reps: s.reps,
-          }))
-        )
+      const { data: newEx, error: err } = await supabase
+        .from('exercises')
+        .insert({
+          user_id: user.id,
+          name: midWorkoutExName.trim(),
+          workout_type: selectedType,
+          sort_order: list.length,
+        })
+        .select()
+        .single()
+
+      if (err || !newEx) {
+        throw new Error(err?.message ?? 'Failed to add exercise')
       }
+
+      insertedExerciseId = newEx.id
+
+      const curEx = currentExercise()
+      if (curEx && sessionId) {
+        await replaceExerciseSets(sessionId, curEx.id, sessionSets[curEx.id] ?? [])
+      }
+
+      const newList = [...list]
+      newList.splice(insertIdx, 0, newEx)
+
+      await persistExerciseOrder(selectedType, newList)
+
+      setSessionSets((prev) => ({
+        ...prev,
+        [newEx.id]: [{ exercise_id: newEx.id, set_number: 1, weight_kg: 0, reps: 0 }],
+      }))
+      setAnimDir('next')
+      setExIndex(insertIdx)
+      setMidWorkoutExName('')
+      setShowAddMidWorkout(false)
+      setShowExList(false)
+    } catch (err) {
+      if (insertedExerciseId) {
+        await supabase.from('exercises').delete().eq('id', insertedExerciseId)
+      }
+      setError(getErrorMessage(err, 'Failed to add exercise'))
+      void fetchExercises()
+    } finally {
+      setSavingEx(false)
     }
-    // Insert at position right after current exercise
-    const newList = [...list]
-    newList.splice(insertIdx, 0, newEx)
-    for (let i = insertIdx + 1; i < newList.length; i++) {
-      newList[i] = { ...newList[i], sort_order: newList[i].sort_order + 1 }
-    }
-    setExercises((prev) => ({ ...prev, [selectedType]: newList }))
-    setSessionSets((prev) => ({
-      ...prev, [newEx.id]: [{ exercise_id: newEx.id, set_number: 1, weight_kg: 0, reps: 0 }],
-    }))
-    setAnimDir('next')
-    setExIndex(insertIdx)
-    setMidWorkoutExName('')
-    setShowAddMidWorkout(false)
-    setShowExList(false)
-    setSavingEx(false)
   }
 
   async function deleteExerciseMidWorkout(exId: number) {
@@ -538,20 +676,49 @@ export default function GymTab() {
     const delIdx = exList.findIndex((e) => e.id === exId)
     if (delIdx < 0) return
     setError(null)
-    if (sessionId) {
-      await supabase.from('workout_sets').delete().eq('session_id', sessionId).eq('exercise_id', exId)
-    }
-    await supabase.from('exercises').delete().eq('id', exId)
     const newList = exList.filter((e) => e.id !== exId)
-    setExercises((prev) => ({ ...prev, [selectedType]: newList }))
-    setSessionSets((prev) => { const next = { ...prev }; delete next[exId]; return next })
-    setSkippedExercises((prev) => { const next = new Set(prev); next.delete(exId); return next })
-    setDeletingExId(null)
-    if (newList.length === 0) { cancelWorkout(); return }
-    if (delIdx < exIndex) {
-      setExIndex((i) => i - 1)
-    } else if (delIdx === exIndex && exIndex >= newList.length) {
-      setExIndex(newList.length - 1)
+
+    try {
+      if (sessionId) {
+        const { error: deleteSetErr } = await supabase
+          .from('workout_sets')
+          .delete()
+          .eq('session_id', sessionId)
+          .eq('exercise_id', exId)
+
+        if (deleteSetErr) throw new Error(deleteSetErr.message)
+      }
+
+      const { error: deleteExerciseErr } = await supabase.from('exercises').delete().eq('id', exId)
+      if (deleteExerciseErr) throw new Error(deleteExerciseErr.message)
+
+      await persistExerciseOrder(selectedType, newList)
+
+      setSessionSets((prev) => {
+        const next = { ...prev }
+        delete next[exId]
+        return next
+      })
+      setSkippedExercises((prev) => {
+        const next = new Set(prev)
+        next.delete(exId)
+        return next
+      })
+      setDeletingExId(null)
+
+      if (newList.length === 0) {
+        await cancelWorkout()
+        return
+      }
+
+      if (delIdx < exIndex) {
+        setExIndex((i) => i - 1)
+      } else if (delIdx === exIndex && exIndex >= newList.length) {
+        setExIndex(newList.length - 1)
+      }
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to delete exercise'))
+      void fetchExercises()
     }
   }
 
@@ -559,16 +726,11 @@ export default function GymTab() {
     if (targetIdx === exIndex) return
     const ex = currentExercise()
     if (ex && sessionId) {
-      const sets = sessionSets[ex.id] ?? []
-      const valid = sets.filter((s) => s.weight_kg > 0 || s.weight_kg === -1 || s.reps > 0)
-      if (valid.length > 0) {
-        await supabase.from('workout_sets').delete().eq('session_id', sessionId).eq('exercise_id', ex.id)
-        await supabase.from('workout_sets').insert(
-          valid.map((s) => ({
-            user_id: user!.id, session_id: sessionId, exercise_id: ex.id,
-            set_number: s.set_number, weight_kg: Math.max(0, s.weight_kg), reps: s.reps,
-          }))
-        )
+      try {
+        await replaceExerciseSets(sessionId, ex.id, sessionSets[ex.id] ?? [])
+      } catch (err) {
+        setError(getErrorMessage(err, 'Failed to save exercise'))
+        return
       }
     }
     setAnimDir(targetIdx > exIndex ? 'next' : 'prev')
@@ -581,55 +743,58 @@ export default function GymTab() {
     const ex = currentExercise()
     if (!ex || !sessionId) return
     setSaving(true)
-    const sets = sessionSets[ex.id] ?? []
-    const valid = sets.filter((s) => s.weight_kg > 0 || s.weight_kg === -1 || s.reps > 0)
-    if (valid.length > 0) {
-      await supabase.from('workout_sets').delete().eq('session_id', sessionId).eq('exercise_id', ex.id)
-      await supabase.from('workout_sets').insert(
-        valid.map((s) => ({
-          user_id: user!.id, session_id: sessionId, exercise_id: ex.id,
-          set_number: s.set_number, weight_kg: Math.max(0, s.weight_kg), reps: s.reps,
-        }))
-      )
+    try {
+      await replaceExerciseSets(sessionId, ex.id, sessionSets[ex.id] ?? [])
+
+      const exList = exercises[selectedType] ?? []
+      if (exIndex < exList.length - 1) {
+        setAnimDir('next')
+        setExIndex((i) => i + 1)
+      } else {
+        await completeStrengthWorkout(sessionId)
+      }
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to save exercise'))
+    } finally {
+      setSaving(false)
     }
-    const exList = exercises[selectedType] ?? []
-    if (exIndex < exList.length - 1) {
-      setAnimDir('next')
-      setExIndex((i) => i + 1)
-    } else {
-      await supabase.from('workout_sessions')
-        .update(sessionTimestamps())
-        .eq('id', sessionId)
-      setScreen('complete')
-      fetchLastSessions()
-      fetchRecentWorkouts()
-    }
-    setSaving(false)
   }
 
   async function skipExercise() {
     const ex = currentExercise()
     if (!ex || saving) return
     setSaving(true)
-    setSkippedExercises((prev) => new Set([...prev, ex.id]))
-    // Remove any saved sets for this exercise
-    if (sessionId) {
-      await supabase.from('workout_sets').delete().eq('session_id', sessionId).eq('exercise_id', ex.id)
+    try {
+      setSkippedExercises((prev) => new Set([...prev, ex.id]))
+
+      if (sessionId) {
+        const { error: clearErr } = await supabase
+          .from('workout_sets')
+          .delete()
+          .eq('session_id', sessionId)
+          .eq('exercise_id', ex.id)
+
+        if (clearErr) throw new Error(clearErr.message)
+      }
+
+      setSessionSets((prev) => {
+        const next = { ...prev }
+        delete next[ex.id]
+        return next
+      })
+
+      const exList = exercises[selectedType] ?? []
+      if (exIndex < exList.length - 1) {
+        setAnimDir('next')
+        setExIndex((i) => i + 1)
+      } else if (sessionId) {
+        await completeStrengthWorkout(sessionId)
+      }
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to skip exercise'))
+    } finally {
+      setSaving(false)
     }
-    setSessionSets((prev) => { const next = { ...prev }; delete next[ex.id]; return next })
-    const exList = exercises[selectedType] ?? []
-    if (exIndex < exList.length - 1) {
-      setAnimDir('next')
-      setExIndex((i) => i + 1)
-    } else {
-      await supabase.from('workout_sessions')
-        .update(sessionTimestamps())
-        .eq('id', sessionId)
-      setScreen('complete')
-      fetchLastSessions()
-      fetchRecentWorkouts()
-    }
-    setSaving(false)
   }
 
   function goBack() {
@@ -659,16 +824,25 @@ export default function GymTab() {
   }
 
   async function cancelWorkout() {
-    if (sessionId) {
-      await supabase.from('workout_sets').delete().eq('session_id', sessionId)
-      await supabase.from('workout_sessions').delete().eq('id', sessionId)
+    try {
+      if (sessionId) {
+        const { error: deleteSetsErr } = await supabase.from('workout_sets').delete().eq('session_id', sessionId)
+        if (deleteSetsErr) throw new Error(deleteSetsErr.message)
+
+        const { error: deleteSessionErr } = await supabase.from('workout_sessions').delete().eq('id', sessionId)
+        if (deleteSessionErr) throw new Error(deleteSessionErr.message)
+      }
+
+      resetWorkout()
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to cancel workout'))
     }
-    resetWorkout()
   }
 
   function resetWorkout() {
     setSessionId(null); setExIndex(0); setSessionSets({}); setPrevSets({})
     setWorkoutStart(null); setConfirmCancel(false); setIsFasted(false)
+    setWorkoutEnd(null)
     setSkippedExercises(new Set()); setWorkoutNotes(''); setShowExList(false)
     setCardioDistance(''); setCardioMinutes(''); setCardioFeel(''); setCardioFasted(false)
     setWorkoutDate(format(new Date(), 'yyyy-MM-dd'))
@@ -678,30 +852,64 @@ export default function GymTab() {
   }
 
   async function saveNotesAndFinish() {
-    if (sessionId && workoutNotes.trim()) {
-      await supabase.from('workout_sessions').update({ notes: workoutNotes.trim() }).eq('id', sessionId)
+    try {
+      if (sessionId && workoutNotes.trim()) {
+        const { error: noteErr } = await supabase
+          .from('workout_sessions')
+          .update({ notes: workoutNotes.trim() })
+          .eq('id', sessionId)
+
+        if (noteErr) throw new Error(noteErr.message)
+      }
+
+      void refreshWorkoutHistory()
+      resetWorkout()
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to save workout notes'))
     }
-    resetWorkout()
   }
 
   async function goBackToEditWorkout() {
-    if (sessionId) {
-      await supabase.from('workout_sessions')
-        .update({ completed_at: null })
-        .eq('id', sessionId)
+    try {
+      if (sessionId) {
+        const { error: reopenErr } = await supabase
+          .from('workout_sessions')
+          .update({ completed_at: null })
+          .eq('id', sessionId)
+
+        if (reopenErr) throw new Error(reopenErr.message)
+      }
+
+      const exList = exercises[selectedType] ?? []
+      setWorkoutEnd(null)
+      if (workoutStart && sessionId) {
+        setActiveSession({
+          sessionId,
+          workoutType: selectedType,
+          startedAt: workoutStart.toISOString(),
+        })
+      }
+      void refreshWorkoutHistory()
+      setExIndex(exList.length - 1)
+      setAnimDir('prev')
+      setScreen('workout')
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to reopen workout'))
     }
-    const exList = exercises[selectedType] ?? []
-    setExIndex(exList.length - 1)
-    setAnimDir('prev')
-    setScreen('workout')
   }
 
   async function goBackToEditCardio() {
-    if (sessionId) {
-      await supabase.from('workout_sessions').delete().eq('id', sessionId)
-      setSessionId(null)
+    try {
+      if (sessionId) {
+        const { error: deleteErr } = await supabase.from('workout_sessions').delete().eq('id', sessionId)
+        if (deleteErr) throw new Error(deleteErr.message)
+        setSessionId(null)
+      }
+
+      setScreen('cardio')
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to reopen cardio log'))
     }
-    setScreen('cardio')
   }
 
   /* ─── Cardio flow ──────────────────────────────────────────────── */
@@ -709,18 +917,20 @@ export default function GymTab() {
   function startCardio() {
     setSelectedType(cardioKey)
     setCardioDistance(''); setCardioMinutes(''); setCardioFeel('')
-    setCardioFasted(false); setWorkoutNotes(''); setWorkoutStart(new Date())
+    setCardioFasted(false); setWorkoutNotes(''); setWorkoutStart(new Date()); setWorkoutEnd(null)
     setWorkoutDate(format(new Date(), 'yyyy-MM-dd'))
     setScreen('cardio')
   }
 
   async function completeCardio() {
+    if (!user) return
+
     setSaving(true)
     const timestamps = sessionTimestamps()
     const { data: session, error: err } = await supabase
       .from('workout_sessions')
       .insert({
-        user_id: user!.id, workout_type: cardioKey,
+        user_id: user.id, workout_type: cardioKey,
         is_fasted: cardioFasted,
         distance_km: cardioDistance ? parseFloat(cardioDistance) : null,
         duration_minutes: cardioMinutes ? parseFloat(cardioMinutes) : null,
@@ -733,8 +943,7 @@ export default function GymTab() {
     setSessionId(session.id)
     setSaving(false)
     setScreen('complete')
-    fetchLastSessions()
-    fetchRecentWorkouts()
+    void refreshWorkoutHistory()
   }
 
   /* ─── Detail / Delete ──────────────────────────────────────────── */
@@ -756,12 +965,20 @@ export default function GymTab() {
   }
 
   async function deleteWorkout(id: number) {
-    await supabase.from('workout_sets').delete().eq('session_id', id)
-    await supabase.from('workout_sessions').delete().eq('id', id)
-    setRecentWorkouts((prev) => prev.filter((s) => s.id !== id))
-    setDeletingSessionId(null)
-    if (detailSession?.id === id) setScreen('select')
-    fetchLastSessions()
+    try {
+      const { error: deleteSetsErr } = await supabase.from('workout_sets').delete().eq('session_id', id)
+      if (deleteSetsErr) throw new Error(deleteSetsErr.message)
+
+      const { error: deleteSessionErr } = await supabase.from('workout_sessions').delete().eq('id', id)
+      if (deleteSessionErr) throw new Error(deleteSessionErr.message)
+
+      setRecentWorkouts((prev) => prev.filter((s) => s.id !== id))
+      setDeletingSessionId(null)
+      if (detailSession?.id === id) setScreen('select')
+      void refreshWorkoutHistory()
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to delete workout'))
+    }
   }
 
   async function toggleDetailFasted() {
@@ -782,7 +999,7 @@ export default function GymTab() {
     if (err) { setError('Failed to update date'); return }
     setDetailSession({ ...detailSession, started_at: ts, completed_at: ts })
     setRecentWorkouts((prev) => prev.map((s) => s.id === detailSession.id ? { ...s, started_at: ts, completed_at: ts } : s))
-    fetchLastSessions()
+    void refreshWorkoutHistory()
   }
 
   /* ─── Helpers ──────────────────────────────────────────────────── */
@@ -823,12 +1040,8 @@ export default function GymTab() {
 
   /* ─── Loading ──────────────────────────────────────────────────── */
 
-  if (loading) {
-    return (
-      <div className="flex h-[60vh] items-center justify-center">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-teal border-t-transparent" />
-      </div>
-    )
+  if (loading || categoriesLoading) {
+    return <ScreenLoader />
   }
 
   /* ═════════════════════════════════════════════════════════════════
@@ -836,7 +1049,7 @@ export default function GymTab() {
      ═════════════════════════════════════════════════════════════════ */
 
   if (screen === 'progress') {
-    return <GymProgress userId={user!.id} onBack={() => setScreen('select')} />
+    return <GymProgress userId={user?.id ?? ''} onBack={() => setScreen('select')} />
   }
 
   /* ═════════════════════════════════════════════════════════════════
@@ -1138,8 +1351,8 @@ export default function GymTab() {
         setNewCatLabel('')
         setNewCatDesc('')
         setNewCatColor(CATEGORY_PALETTE[0])
-      } catch (e: any) {
-        setCatEditError(e?.message ?? 'Failed to add category')
+      } catch (e: unknown) {
+        setCatEditError(getErrorMessage(e, 'Failed to add category'))
       } finally {
         setAddingCat(false)
       }
@@ -1165,8 +1378,8 @@ export default function GymTab() {
         })
         setCategories(categories.map((x) => (x.id === c.id ? updated : x)))
         setEditingCatId(null)
-      } catch (e: any) {
-        setCatEditError(e?.message ?? 'Failed to update')
+      } catch (e: unknown) {
+        setCatEditError(getErrorMessage(e, 'Failed to update'))
       }
     }
 
@@ -1178,8 +1391,8 @@ export default function GymTab() {
       try {
         await deleteCategory(c.id)
         setCategories(categories.filter((x) => x.id !== c.id))
-      } catch (e: any) {
-        setCatEditError(e?.message ?? 'Failed to delete')
+      } catch (e: unknown) {
+        setCatEditError(getErrorMessage(e, 'Failed to delete'))
       } finally {
         setDeletingCatId(null)
       }
@@ -1660,7 +1873,7 @@ export default function GymTab() {
                 <button onClick={saveAndAdvance} disabled={saving}
                   className="flex-1 rounded-xl py-3.5 text-sm font-semibold text-bg transition-opacity hover:opacity-90 disabled:opacity-60"
                   style={{ backgroundColor: meta.color }}>
-                  {saving ? 'Saving...' : isLast ? 'Finish Workout' : 'Complete & Next'}
+                  {saving ? 'Saving...' : isLast ? 'Summary' : 'Complete & Next'}
                 </button>
               </div>
             </motion.div>
@@ -1677,54 +1890,56 @@ export default function GymTab() {
   if (screen === 'complete') {
     const meta = metaFor(selectedType)
     const isCardio = isCardioKey(selectedType)
+    const summaryActionBarClass = 'sticky bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] mt-6 grid grid-cols-2 gap-3 rounded-3xl bg-bg/92 pb-1 pt-4 backdrop-blur-md'
 
     if (isCardio) {
       return (
-        <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.3 }}>
-          <div className="pt-4 text-center">
+        <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.3 }} className="pb-28">
+          <div className="rounded-[28px] border border-card-border bg-card/55 px-5 pb-5 pt-6 text-center shadow-sm backdrop-blur-sm">
             <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full" style={{ backgroundColor: meta.color + '18' }}>
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke={meta.color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
             </div>
-            <h1 className="mb-1 text-2xl font-bold text-fg">Cardio Complete</h1>
-            <div className="mb-6 flex items-center justify-center gap-2">
+            <h1 className="mb-1 text-2xl font-bold text-fg">Cardio Summary</h1>
+            <div className="mb-2 flex items-center justify-center gap-2">
               <span className="text-sm" style={{ color: meta.color }}>Cardio</span>
               {cardioFasted && <span className="rounded-full bg-teal/15 px-2 py-0.5 text-[11px] font-bold text-teal">F</span>}
             </div>
+            <p className="text-sm text-secondary">Review the session, add notes, or jump back in to edit before finishing.</p>
           </div>
-          <div className="mb-6 grid grid-cols-2 gap-3">
+          <div className="mt-5 grid grid-cols-2 gap-3">
             {cardioDistance && (
-              <div className="rounded-xl border border-card-border bg-card p-3 text-center">
+              <div className="rounded-2xl border border-card-border bg-card p-4 text-center shadow-sm">
                 <p className="text-[11px] font-medium uppercase tracking-wider text-dim">Distance</p>
                 <p className="mt-1 text-lg font-bold text-fg">{cardioDistance} km</p>
               </div>
             )}
             {cardioMinutes && (
-              <div className="rounded-xl border border-card-border bg-card p-3 text-center">
+              <div className="rounded-2xl border border-card-border bg-card p-4 text-center shadow-sm">
                 <p className="text-[11px] font-medium uppercase tracking-wider text-dim">Time</p>
                 <p className="mt-1 text-lg font-bold text-fg">{cardioMinutes} min</p>
               </div>
             )}
           </div>
           {cardioFeel && (
-            <div className="mb-6 rounded-xl border border-card-border bg-card px-4 py-3">
+            <div className="mt-5 rounded-2xl border border-card-border bg-card px-4 py-4 shadow-sm">
               <p className="text-xs text-dim">How it felt</p>
               <p className="mt-1 text-sm text-fg">{cardioFeel}</p>
             </div>
           )}
-          <div className="mb-4">
-            <label className="mb-1 block text-xs font-medium text-secondary">Notes (optional)</label>
+          <div className="mt-6 rounded-2xl border border-card-border bg-card px-4 py-4 shadow-sm">
+            <label className="mb-2 block text-xs font-medium uppercase tracking-[0.18em] text-dim">Notes (optional)</label>
             <textarea value={workoutNotes} onChange={(e) => setWorkoutNotes(e.target.value)}
               placeholder="Anything else to note?" rows={2}
               className="w-full rounded-lg border border-card-border bg-bg px-3 py-2.5 text-sm text-fg placeholder-dim outline-none focus:border-teal focus:ring-1 focus:ring-teal resize-none" />
           </div>
-          <div className="flex gap-2">
+          <div className={summaryActionBarClass}>
             <button onClick={goBackToEditCardio}
-              className="flex-1 rounded-xl border border-card-border py-3.5 text-sm font-semibold text-muted transition-colors hover:text-fg">
+              className="rounded-2xl border border-card-border bg-card py-3.5 text-sm font-semibold text-muted transition-colors hover:text-fg">
               Go Back & Edit
             </button>
             <button onClick={saveNotesAndFinish}
-              className="flex-1 rounded-xl bg-teal py-3.5 text-sm font-semibold text-bg transition-opacity hover:opacity-90">
-              Done
+              className="rounded-2xl bg-teal py-3.5 text-sm font-semibold text-bg transition-opacity hover:opacity-90">
+              Finish Workout
             </button>
           </div>
         </motion.div>
@@ -1738,54 +1953,75 @@ export default function GymTab() {
       ? Object.values(prevSets).flat().reduce((sum, s) => sum + Math.max(0, s.weight_kg) * s.reps, 0) : 0
     const totalSetsCount = Object.values(sessionSets).flat().filter((s) => s.weight_kg > 0 || s.weight_kg === -1 || s.reps > 0).length
     const volumeDiff = totalVolume - prevTotalVolume
+    const durationLabel = workoutStart && workoutEnd
+      ? formatWorkoutDuration(workoutStart.toISOString(), workoutEnd)
+      : durationStr()
+    const summaryTone = volumeDiff === 0
+      ? 'border-card-border bg-card text-secondary'
+      : volumeDiff > 0
+        ? 'border-green-500/20 bg-green-500/5 text-green-500'
+        : 'border-red-500/20 bg-red-500/5 text-red-500'
+    const summaryCopy = volumeDiff === 0
+      ? 'Matched the volume from your last session'
+      : `${volumeDiff > 0 ? 'Volume up' : 'Volume down'} ${Math.abs(Math.round(volumeDiff)).toLocaleString()} kg`
 
     return (
-      <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.3 }}>
-        <div className="pt-4 text-center">
+      <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.3 }} className="pb-28">
+        <div className="rounded-[28px] border border-card-border bg-card/55 px-5 pb-5 pt-6 text-center shadow-sm backdrop-blur-sm">
           <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full" style={{ backgroundColor: meta.color + '18' }}>
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke={meta.color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
           </div>
-          <h1 className="mb-1 text-2xl font-bold text-fg">Workout Complete</h1>
-          <div className="mb-6 flex items-center justify-center gap-2">
+          <h1 className="mb-1 text-2xl font-bold text-fg">Workout Summary</h1>
+          <div className="mb-2 flex items-center justify-center gap-2">
             <span className="text-sm" style={{ color: meta.color }}>{meta.label} Day</span>
             {isFasted && <span className="rounded-full bg-teal/15 px-2 py-0.5 text-[11px] font-bold text-teal">F</span>}
           </div>
+          <p className="text-sm text-secondary">Review the session, add notes, or jump back in to edit before finishing.</p>
         </div>
 
-        <div className="mb-6 grid grid-cols-3 gap-3">
-          <div className="rounded-xl border border-card-border bg-card p-3 text-center">
+        <div className="mt-5 grid grid-cols-2 gap-3">
+          <div className="rounded-2xl border border-card-border bg-card p-4 text-center shadow-sm">
             <p className="text-[11px] font-medium uppercase tracking-wider text-dim">Duration</p>
-            <p className="mt-1 text-lg font-bold text-fg">{durationStr()}</p>
+            <p className="mt-1 text-lg font-bold text-fg">{durationLabel}</p>
           </div>
-          <div className="rounded-xl border border-card-border bg-card p-3 text-center">
+          <div className="rounded-2xl border border-card-border bg-card p-4 text-center shadow-sm">
             <p className="text-[11px] font-medium uppercase tracking-wider text-dim">Sets</p>
             <p className="mt-1 text-lg font-bold text-fg">{totalSetsCount}</p>
           </div>
-          <div className="rounded-xl border border-card-border bg-card p-3 text-center">
+          <div className="col-span-2 rounded-[24px] border border-card-border bg-card p-5 text-center shadow-sm">
             <p className="text-[11px] font-medium uppercase tracking-wider text-dim">Volume</p>
-            <p className="mt-1 text-lg font-bold text-teal">{Math.round(totalVolume).toLocaleString()} kg</p>
+            <p className="mt-2 text-3xl font-bold tabular-nums" style={{ color: meta.color }}>
+              {Math.round(totalVolume).toLocaleString()} kg
+            </p>
           </div>
         </div>
 
         {prevTotalVolume > 0 && (
-          <div className={`mb-6 rounded-xl border px-4 py-3 text-center text-sm font-medium ${
-            volumeDiff >= 0 ? 'border-green-500/20 bg-green-500/5 text-green-500' : 'border-red-500/20 bg-red-500/5 text-red-500'
+          <div className={`mt-4 rounded-2xl border px-4 py-3 text-center text-sm font-medium shadow-sm ${
+            summaryTone
           }`}>
-            {volumeDiff >= 0 ? 'Volume up' : 'Volume down'} {Math.abs(Math.round(volumeDiff)).toLocaleString()} kg
-            {prevTotalVolume > 0 && ` (${volumeDiff >= 0 ? '+' : ''}${((volumeDiff / prevTotalVolume) * 100).toFixed(1)}%)`} vs last session
+            {summaryCopy}
+            {volumeDiff !== 0 && ` (${volumeDiff >= 0 ? '+' : ''}${((volumeDiff / prevTotalVolume) * 100).toFixed(1)}%) vs last session`}
           </div>
         )}
 
-        <h2 className="mb-3 text-sm font-semibold text-fg">Exercise Summary</h2>
-        <div className="space-y-2">
+        <div className="mt-6">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-fg">Exercise Summary</h2>
+            <span className="text-xs text-dim">{exList.length} exercises</span>
+          </div>
+        <div className="space-y-3">
           {exList.map((exercise) => {
             const isSkipped = skippedExercises.has(exercise.id)
             if (isSkipped) {
               return (
-                <div key={exercise.id} className="rounded-xl border border-card-border bg-card px-4 py-3 opacity-50">
+                <div key={exercise.id} className="rounded-2xl border border-card-border bg-card px-4 py-4 opacity-60 shadow-sm">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-semibold text-fg">{exercise.name}</span>
-                    <span className="text-xs font-medium text-amber-500">Skipped</span>
+                    <div>
+                      <span className="text-sm font-semibold text-fg">{exercise.name}</span>
+                      <p className="mt-1 text-xs text-dim">No sets recorded in this session.</p>
+                    </div>
+                    <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] font-semibold text-amber-500">Skipped</span>
                   </div>
                 </div>
               )
@@ -1797,39 +2033,49 @@ export default function GymTab() {
             const prevVol = calcPrevVolume(exercise.id)
             const diff = vol - prevVol
             return (
-              <div key={exercise.id} className="rounded-xl border border-card-border bg-card px-4 py-3">
-                <div className="mb-1 flex items-center justify-between">
-                  <span className="text-sm font-semibold text-fg">{exercise.name}</span>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted">{validSets.length} set{validSets.length !== 1 ? 's' : ''}</span>
-                    {prevVol > 0 && (
-                      <span className={`text-xs font-semibold ${diff >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                        {diff >= 0 ? '+' : ''}{Math.round(diff)} kg
-                      </span>
-                    )}
+              <div key={exercise.id} className="rounded-2xl border border-card-border bg-card px-4 py-4 shadow-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-fg">{exercise.name}</p>
+                    <p className="mt-1 text-xs text-dim">{validSets.length} set{validSets.length !== 1 ? 's' : ''} recorded</p>
                   </div>
+                  {prevVol > 0 && (
+                    <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${diff === 0 ? 'border border-card-border text-secondary' : diff > 0 ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}`}>
+                      {diff === 0 ? 'No change' : `${diff >= 0 ? '+' : ''}${Math.round(diff)} kg`}
+                    </span>
+                  )}
                 </div>
-                <p className="text-xs text-dim">{validSets.map((s) => `${s.weight_kg === -1 ? 'BW' : s.weight_kg + 'kg'} x ${s.reps}`).join('  /  ')}</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {validSets.map((set, index) => (
+                    <span
+                      key={`${exercise.id}-${index}`}
+                      className="rounded-full border border-card-border bg-bg px-2.5 py-1 text-xs font-medium text-secondary"
+                    >
+                      {set.weight_kg === -1 ? 'BW' : `${set.weight_kg}kg`} x {set.reps}
+                    </span>
+                  ))}
+                </div>
               </div>
             )
           })}
         </div>
+        </div>
 
-        <div className="mt-6">
-          <label className="mb-1 block text-xs font-medium text-secondary">Notes (optional)</label>
+        <div className="mt-6 rounded-2xl border border-card-border bg-card px-4 py-4 shadow-sm">
+          <label className="mb-2 block text-xs font-medium uppercase tracking-[0.18em] text-dim">Notes (optional)</label>
           <textarea value={workoutNotes} onChange={(e) => setWorkoutNotes(e.target.value)}
             placeholder="How was the workout? Anything to note?" rows={2}
             className="w-full rounded-lg border border-card-border bg-bg px-3 py-2.5 text-sm text-fg placeholder-dim outline-none focus:border-teal focus:ring-1 focus:ring-teal resize-none" />
         </div>
 
-        <div className="mt-4 flex gap-2">
+        <div className={summaryActionBarClass}>
           <button onClick={goBackToEditWorkout}
-            className="flex-1 rounded-xl border border-card-border py-3.5 text-sm font-semibold text-muted transition-colors hover:text-fg">
+            className="rounded-2xl border border-card-border bg-card py-3.5 text-sm font-semibold text-muted transition-colors hover:text-fg">
             Go Back & Edit
           </button>
           <button onClick={saveNotesAndFinish}
-            className="flex-1 rounded-xl bg-teal py-3.5 text-sm font-semibold text-bg transition-opacity hover:opacity-90">
-            Done
+            className="rounded-2xl bg-teal py-3.5 text-sm font-semibold text-bg transition-opacity hover:opacity-90">
+            Finish Workout
           </button>
         </div>
       </motion.div>

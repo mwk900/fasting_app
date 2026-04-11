@@ -79,11 +79,16 @@ interface SectionProps {
 }
 
 function Section({ title, open, onToggle, children }: SectionProps) {
+  const sectionId = `timer-section-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
+
   return (
     <div className="border-t border-card-border">
       <button
         onClick={onToggle}
+        type="button"
         className="flex w-full items-center justify-between py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted"
+        aria-expanded={open}
+        aria-controls={sectionId}
       >
         {title}
         <svg
@@ -108,6 +113,7 @@ function Section({ title, open, onToggle, children }: SectionProps) {
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.2 }}
             className="overflow-hidden"
+            id={sectionId}
           >
             <div className="pb-3">{children}</div>
           </motion.div>
@@ -163,11 +169,12 @@ export default function TimerTab() {
   }, [Math.floor(displayElapsed / 1800)])
 
   async function fetchActiveFast() {
+    if (!user) return
     setError(null)
     const { data, error: err } = await supabase
       .from('active_fast')
       .select('*')
-      .eq('user_id', user!.id)
+      .eq('user_id', user.id)
       .single()
     if (err && err.code !== 'PGRST116') setError('Failed to load timer state')
     if (data) setActiveFast(data)
@@ -175,10 +182,11 @@ export default function TimerTab() {
   }
 
   async function fetchLastFast() {
+    if (!user) return
     const { data } = await supabase
       .from('fasts')
       .select('*')
-      .eq('user_id', user!.id)
+      .eq('user_id', user.id)
       .order('end_time', { ascending: false })
       .limit(1)
       .single()
@@ -186,6 +194,7 @@ export default function TimerTab() {
   }
 
   async function startFast() {
+    if (!user) return
     setError(null)
     const now = new Date().toISOString()
 
@@ -193,12 +202,12 @@ export default function TimerTab() {
     const { data: existing } = await supabase
       .from('active_fast')
       .select('id')
-      .eq('user_id', user!.id)
+      .eq('user_id', user.id)
       .maybeSingle()
 
     const query = existing
-      ? supabase.from('active_fast').update({ start_time: now, is_active: true }).eq('user_id', user!.id)
-      : supabase.from('active_fast').insert({ user_id: user!.id, start_time: now, is_active: true })
+      ? supabase.from('active_fast').update({ start_time: now, is_active: true }).eq('user_id', user.id)
+      : supabase.from('active_fast').insert({ user_id: user.id, start_time: now, is_active: true })
 
     const { data, error: err } = await query.select().single()
     if (err) {
@@ -209,6 +218,7 @@ export default function TimerTab() {
   }
 
   async function stopFast(endWeight?: number, notes?: string) {
+    if (!user) return
     if (!activeFast?.start_time) return
     setError(null)
 
@@ -216,7 +226,7 @@ export default function TimerTab() {
     const durationMinutes = Math.floor(elapsed / 60)
 
     const { error: insertErr } = await supabase.from('fasts').insert({
-      user_id: user!.id,
+      user_id: user.id,
       start_time: activeFast.start_time,
       end_time: endTime,
       duration_minutes: durationMinutes,
@@ -232,7 +242,7 @@ export default function TimerTab() {
     const { error: updateErr } = await supabase
       .from('active_fast')
       .update({ start_time: null, is_active: false })
-      .eq('user_id', user!.id)
+      .eq('user_id', user.id)
 
     if (updateErr) {
       setError('Failed to reset timer')
@@ -410,6 +420,7 @@ export default function TimerTab() {
           {/* Stop button */}
           <button
             onClick={() => setShowStopModal(true)}
+            type="button"
             className="mt-8 rounded-xl bg-red-600 px-8 py-3.5 text-sm font-semibold text-white transition-opacity hover:opacity-90"
           >
             Stop Fasting
@@ -425,6 +436,7 @@ export default function TimerTab() {
                 <button
                   key={h}
                   onClick={() => setDebugOffset((o) => o + h * 3600)}
+                  type="button"
                   className="rounded bg-card-border px-2.5 py-1 text-xs font-medium text-secondary transition-colors hover:text-fg"
                 >
                   +{h}h
@@ -432,6 +444,7 @@ export default function TimerTab() {
               ))}
               <button
                 onClick={() => setDebugOffset(0)}
+                type="button"
                 className="rounded bg-red-500/20 px-2.5 py-1 text-xs font-medium text-red-400 transition-colors hover:text-red-300"
               >
                 Reset
@@ -443,6 +456,7 @@ export default function TimerTab() {
         <div className="flex min-h-[70vh] flex-col items-center justify-center">
           <motion.button
             onClick={startFast}
+            type="button"
             animate={{ scale: [1, 1.04, 1] }}
             transition={{ repeat: Infinity, duration: 2.5, ease: 'easeInOut' }}
             className="rounded-2xl bg-teal px-10 py-5 text-lg font-bold text-bg shadow-lg shadow-teal/20"

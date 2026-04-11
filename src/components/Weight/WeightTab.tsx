@@ -25,6 +25,25 @@ const RANGES: { key: RangeKey; label: string; days: number | null }[] = [
   { key: 'all', label: 'All', days: null },
 ]
 
+interface WeightChartPoint {
+  id: number
+  date: string
+  fullDate: string
+  weight_kg: number
+  notes: string | null
+}
+
+interface BrushRange {
+  startIndex?: number
+  endIndex?: number
+}
+
+interface ChartClickState {
+  activePayload?: Array<{
+    payload?: WeightChartPoint
+  }>
+}
+
 /**
  * Label card for the selected chart point. Self-measures via useLayoutEffect so
  * the surrounding SVG foreignObject is sized exactly to its rendered content,
@@ -173,11 +192,12 @@ export default function WeightTab() {
   }, [user])
 
   async function fetchEntries() {
+    if (!user) return
     setError(null)
     const { data, error: err } = await supabase
       .from('weight_log')
       .select('*')
-      .eq('user_id', user!.id)
+      .eq('user_id', user.id)
       .order('logged_date', { ascending: true })
     if (err) { setError('Failed to load weight data'); setLoading(false); return }
     setEntries(data ?? [])
@@ -186,12 +206,13 @@ export default function WeightTab() {
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault()
+    if (!user) return
     if (!weight) return
     setSaving(true)
     setError(null)
 
     const { error: err } = await supabase.from('weight_log').insert({
-      user_id: user!.id,
+      user_id: user.id,
       logged_date: date,
       weight_kg: parseFloat(weight),
       notes: notes || null,
@@ -212,9 +233,10 @@ export default function WeightTab() {
     setDeletingId(null)
   }
 
-  const chartData = useMemo(
+  const chartData = useMemo<WeightChartPoint[]>(
     () =>
       entries.map((e) => ({
+        id: e.id,
         date: format(parseISO(e.logged_date), 'dd/MM'),
         fullDate: e.logged_date,
         weight_kg: e.weight_kg,
@@ -244,7 +266,7 @@ export default function WeightTab() {
   )
   const selectedChartIndex = useMemo(() => {
     if (!selectedEntry) return -1
-    return chartData.findIndex((d) => d.fullDate === selectedEntry.logged_date)
+    return chartData.findIndex((d) => d.id === selectedEntry.id)
   }, [chartData, selectedEntry])
   const selectedChartPoint =
     selectedChartIndex >= 0 ? chartData[selectedChartIndex] : null
@@ -263,7 +285,7 @@ export default function WeightTab() {
       setLogPage(Math.floor(reversedIdx / LOG_PAGE_SIZE))
     }
 
-    const idx = chartData.findIndex((d) => d.fullDate === entry.logged_date)
+    const idx = chartData.findIndex((d) => d.id === entry.id)
     if (idx < 0) return
     // Ensure visible: if outside current window, re-center a window around it
     const [s, e] = activeWindow ?? defaultWindow
@@ -306,7 +328,7 @@ export default function WeightTab() {
 
   // Brush onChange → keep window in sync
   const handleBrushChange = useCallback(
-    (brushRange: { startIndex?: number; endIndex?: number }) => {
+    (brushRange: BrushRange) => {
       if (brushRange.startIndex != null && brushRange.endIndex != null) {
         const s = brushRange.startIndex
         const e = brushRange.endIndex
@@ -482,18 +504,21 @@ export default function WeightTab() {
               {RANGES.map((r) => (
                 <button
                   key={r.key}
+                  type="button"
                   onClick={() => { setRange(r.key); setActiveWindow(null) }}
                   className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
                     range === r.key && !isCustomWindow
                       ? 'bg-teal text-bg'
                       : 'bg-card text-secondary border border-card-border hover:text-fg'
                   }`}
+                  aria-pressed={range === r.key && !isCustomWindow}
                 >
                   {r.label}
                 </button>
               ))}
               {isCustomWindow && (
                 <button
+                  type="button"
                   onClick={() => setActiveWindow(null)}
                   className="ml-auto rounded-lg border border-card-border bg-card px-3 py-1.5 text-xs font-semibold text-secondary hover:text-fg transition-colors"
                 >
@@ -513,10 +538,10 @@ export default function WeightTab() {
                 <LineChart
                   data={chartData}
                   margin={{ top: 5, right: 10, left: 0, bottom: 5 }}
-                  onClick={(state: any) => {
+                  onClick={(state: ChartClickState) => {
                     const payload = state?.activePayload?.[0]?.payload
-                    if (!payload?.fullDate) return
-                    const entry = entries.find((e) => e.logged_date === payload.fullDate)
+                    if (!payload?.id) return
+                    const entry = entries.find((e) => e.id === payload.id)
                     if (!entry) return
                     handleSelectEntry(entry)
                   }}
@@ -548,7 +573,7 @@ export default function WeightTab() {
                       // If this point is the currently selected one, the
                       // ReferenceDot label already shows its info — don't
                       // render a second popup on top of it.
-                      if (selectedChartPoint && d.fullDate === selectedChartPoint.fullDate) {
+                      if (selectedChartPoint && d.id === selectedChartPoint.id) {
                         return null
                       }
                       return (
@@ -589,7 +614,7 @@ export default function WeightTab() {
                       strokeWidth={3}
                       ifOverflow="visible"
                       isFront
-                      label={({ viewBox }: any) => {
+                      label={({ viewBox }: { viewBox?: { x: number; y: number; width?: number; height?: number } }) => {
                         if (!viewBox) return <g />
                         return (
                           <NoteLabel
@@ -671,12 +696,14 @@ export default function WeightTab() {
                       {isConfirming ? (
                         <div className="flex items-center gap-1.5">
                           <button
+                            type="button"
                             onClick={() => deleteEntry(entry.id)}
                             className="rounded-lg bg-red-600 px-2.5 py-1 text-[11px] font-medium text-white transition-opacity hover:opacity-90"
                           >
                             Delete
                           </button>
                           <button
+                            type="button"
                             onClick={() => setDeletingId(null)}
                             className="rounded-lg border border-card-border px-2.5 py-1 text-[11px] font-medium text-secondary transition-colors hover:text-fg"
                           >
@@ -685,6 +712,7 @@ export default function WeightTab() {
                         </div>
                       ) : (
                         <button
+                          type="button"
                           onClick={() => setDeletingId(entry.id)}
                           className="p-1 text-muted transition-colors hover:text-red-500"
                           aria-label="Delete entry"
@@ -703,6 +731,7 @@ export default function WeightTab() {
             {totalPages > 1 && (
               <div className="mt-4 flex items-center justify-center gap-3">
                 <button
+                  type="button"
                   onClick={() => setLogPage((p) => Math.max(0, p - 1))}
                   disabled={logPage === 0}
                   className="rounded-lg border border-card-border px-3 py-1.5 text-xs font-semibold text-secondary transition-colors hover:text-fg disabled:opacity-30 disabled:hover:text-secondary"
@@ -713,6 +742,7 @@ export default function WeightTab() {
                   {logPage + 1} / {totalPages}
                 </span>
                 <button
+                  type="button"
                   onClick={() => setLogPage((p) => Math.min(totalPages - 1, p + 1))}
                   disabled={logPage >= totalPages - 1}
                   className="rounded-lg border border-card-border px-3 py-1.5 text-xs font-semibold text-secondary transition-colors hover:text-fg disabled:opacity-30 disabled:hover:text-secondary"

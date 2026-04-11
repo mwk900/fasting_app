@@ -42,11 +42,12 @@ export default function HistoryTab() {
   }, [user])
 
   async function fetchFasts() {
+    if (!user) return
     setError(null)
     const { data, error: err } = await supabase
       .from('fasts')
       .select('*')
-      .eq('user_id', user!.id)
+      .eq('user_id', user.id)
       .order('end_time', { ascending: false })
     if (err) { setError('Failed to load history'); setLoading(false); return }
     setFasts(data ?? [])
