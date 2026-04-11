@@ -1231,7 +1231,7 @@ export default function GymTab() {
                               value={s.weight_kg}
                               onChange={(v) => updateSet(i, 'weight_kg', v)}
                               className={`w-full rounded-lg border bg-bg px-3 py-2.5 text-center text-sm font-medium text-fg placeholder-dim outline-none transition-colors focus:border-teal focus:ring-1 focus:ring-teal ${weightUp ? 'border-green-500/50' : 'border-card-border'}`} />
-                            {weightUp && <span className="absolute -top-1.5 right-1.5 text-[10px] font-bold text-green-500">+{(s.weight_kg - prevSet.weight_kg).toFixed(1)}</span>}
+                            {weightUp && <span className="absolute -top-2 right-1 z-10 rounded-full border border-card-border bg-card px-1.5 py-0.5 text-[10px] font-bold leading-none text-green-500 shadow-sm">+{(s.weight_kg - prevSet.weight_kg).toFixed(1)}</span>}
                           </div>
                           <span className="w-4 text-center text-xs text-dim">x</span>
                           <div className="relative flex-1">
@@ -1240,7 +1240,7 @@ export default function GymTab() {
                               onChange={(e) => { const v = e.target.value === '' ? 0 : parseInt(e.target.value, 10); if (!isNaN(v)) updateSet(i, 'reps', v) }}
                               placeholder="0"
                               className={`w-full rounded-lg border bg-bg px-3 py-2.5 text-center text-sm font-medium text-fg placeholder-dim outline-none transition-colors focus:border-teal focus:ring-1 focus:ring-teal ${repsUp ? 'border-green-500/50' : 'border-card-border'}`} />
-                            {repsUp && <span className="absolute -top-1.5 right-1.5 text-[10px] font-bold text-green-500">+{s.reps - prevSet.reps}</span>}
+                            {repsUp && <span className="absolute -top-2 right-1 z-10 rounded-full border border-card-border bg-card px-1.5 py-0.5 text-[10px] font-bold leading-none text-green-500 shadow-sm">+{s.reps - prevSet.reps}</span>}
                           </div>
                           <div className="flex w-8 justify-center">
                             {sets.length > 1 && (
