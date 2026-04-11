@@ -8,6 +8,8 @@ import HistoryTab from './components/History/HistoryTab'
 import WeightTab from './components/Weight/WeightTab'
 import MeasurementsTab from './components/Measurements/MeasurementsTab'
 import GymTab from './components/Gym/GymTab'
+import GymIsland from './components/Gym/GymIsland'
+import { GymSessionProvider } from './lib/gymSession'
 
 export type Tab = 'timer' | 'history' | 'gym' | 'weight' | 'measurements'
 export type Theme = 'dark' | 'light'
@@ -84,7 +86,9 @@ export default function App() {
   }
 
   return (
+    <GymSessionProvider>
     <div className="min-h-screen bg-bg font-sans transition-colors duration-300">
+      <GymIsland onOpen={() => setActiveTab('gym')} />
       <div className="fixed right-4 top-4 z-30 flex items-center gap-2">
         <button
           onClick={toggleTheme}
@@ -109,13 +113,18 @@ export default function App() {
           </svg>
         )}
       </button>
-        <button
-          onClick={signOut}
-          className="rounded-full bg-card px-3 py-2 text-xs font-medium text-muted shadow-lg border border-card-border transition-colors hover:text-fg"
-        >
-          Sign out
-        </button>
       </div>
+
+      {activeTab === 'timer' && (
+        <div className="fixed inset-x-0 bottom-24 z-30 flex justify-center px-4">
+          <button
+            onClick={signOut}
+            className="rounded-full bg-card px-4 py-2 text-xs font-medium text-muted shadow-lg border border-card-border transition-colors hover:text-fg"
+          >
+            Sign out
+          </button>
+        </div>
+      )}
 
       <main className="mx-auto max-w-lg px-4 pb-28 pt-6">
         <AnimatePresence mode="wait">
@@ -132,5 +141,6 @@ export default function App() {
       </main>
       <TabBar activeTab={activeTab} onTabChange={setActiveTab} />
     </div>
+    </GymSessionProvider>
   )
 }

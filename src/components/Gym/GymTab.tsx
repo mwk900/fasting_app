@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { format, formatDistanceToNow, parseISO } from 'date-fns'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../lib/auth'
+import { useGymSession } from '../../lib/gymSession'
 import GymProgress from './GymProgress'
 import DateInput from '../DateInput'
 import type { Exercise, WorkoutSession, WorkoutType } from '../../types'
@@ -78,11 +79,29 @@ function WeightInput({ value, onChange, className }: {
 
 /* ─── Component ───────────────────────────────────────────────────── */
 
+const WORKOUT_STATE_KEY = 'gym-workout-state-v1'
+
+interface PersistedWorkoutState {
+  sessionId: number
+  selectedType: WorkoutType
+  exIndex: number
+  sessionSets: Record<number, LocalSet[]>
+  prevSets: Record<number, LocalSet[]>
+  workoutStart: string
+  isFasted: boolean
+  skippedExercises: number[]
+  workoutNotes: string
+  workoutDate: string
+  screen: 'workout' | 'complete'
+}
+
 export default function GymTab() {
   const { user } = useAuth()
+  const { setActiveSession } = useGymSession()
 
   /* Navigation */
   const [screen, setScreen] = useState<Screen>('select')
+  const [hydrated, setHydrated] = useState(false)
   const [selectedType, setSelectedType] = useState<WorkoutType>('push')
 
   /* Data */
@@ -141,6 +160,62 @@ export default function GymTab() {
       fetchRecentWorkouts()
     }
   }, [user])
+
+  /* Rehydrate in-progress workout from localStorage once exercises load */
+  useEffect(() => {
+    if (loading || hydrated) return
+    setHydrated(true)
+    try {
+      const raw = localStorage.getItem(WORKOUT_STATE_KEY)
+      if (!raw) return
+      const s = JSON.parse(raw) as PersistedWorkoutState
+      const exList = exercises[s.selectedType] ?? []
+      if (exList.length === 0) {
+        localStorage.removeItem(WORKOUT_STATE_KEY)
+        setActiveSession(null)
+        return
+      }
+      setSessionId(s.sessionId)
+      setSelectedType(s.selectedType)
+      setExIndex(Math.min(s.exIndex, exList.length - 1))
+      setSessionSets(s.sessionSets ?? {})
+      setPrevSets(s.prevSets ?? {})
+      setWorkoutStart(new Date(s.workoutStart))
+      setIsFasted(!!s.isFasted)
+      setSkippedExercises(new Set(s.skippedExercises ?? []))
+      setWorkoutNotes(s.workoutNotes ?? '')
+      setWorkoutDate(s.workoutDate ?? format(new Date(), 'yyyy-MM-dd'))
+      setScreen(s.screen === 'complete' ? 'complete' : 'workout')
+      setActiveSession({
+        sessionId: s.sessionId,
+        workoutType: s.selectedType,
+        startedAt: s.workoutStart,
+      })
+    } catch {
+      localStorage.removeItem(WORKOUT_STATE_KEY)
+    }
+  }, [loading, hydrated, exercises, setActiveSession])
+
+  /* Persist in-progress workout so it survives tab switches / reloads */
+  useEffect(() => {
+    if (!hydrated) return
+    if ((screen !== 'workout' && screen !== 'complete') || !sessionId || !workoutStart) return
+    if (selectedType === 'cardio') return
+    const state: PersistedWorkoutState = {
+      sessionId,
+      selectedType,
+      exIndex,
+      sessionSets,
+      prevSets,
+      workoutStart: workoutStart.toISOString(),
+      isFasted,
+      skippedExercises: Array.from(skippedExercises),
+      workoutNotes,
+      workoutDate,
+      screen,
+    }
+    localStorage.setItem(WORKOUT_STATE_KEY, JSON.stringify(state))
+  }, [hydrated, screen, sessionId, selectedType, exIndex, sessionSets, prevSets, workoutStart, isFasted, skippedExercises, workoutNotes, workoutDate])
 
   async function fetchExercises() {
     const { data, error: err } = await supabase
@@ -264,7 +339,13 @@ export default function GymTab() {
     setExIndex(0)
     setAnimDir('next')
     setConfirmCancel(false)
-    setWorkoutStart(new Date())
+    const startedAt = new Date()
+    setWorkoutStart(startedAt)
+    setActiveSession({
+      sessionId: session.id,
+      workoutType: type,
+      startedAt: startedAt.toISOString(),
+    })
 
     const { data: prevSession } = await supabase
       .from('workout_sessions')
@@ -563,6 +644,8 @@ export default function GymTab() {
     setCardioDistance(''); setCardioMinutes(''); setCardioFeel(''); setCardioFasted(false)
     setWorkoutDate(format(new Date(), 'yyyy-MM-dd'))
     setScreen('select')
+    localStorage.removeItem(WORKOUT_STATE_KEY)
+    setActiveSession(null)
   }
 
   async function saveNotesAndFinish() {
@@ -1139,7 +1222,6 @@ export default function GymTab() {
           ) : (
             <button onClick={() => setConfirmCancel(true)} className="text-sm text-muted transition-colors hover:text-fg">Cancel</button>
           )}
-          <span className="text-sm font-semibold" style={{ color: meta.color }}>{meta.label} Day</span>
           <div className="w-16" />
         </div>
 

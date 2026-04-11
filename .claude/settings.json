@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls /home/mwk/Desktop/fasting_app/tailwind* /home/mwk/Desktop/fasting_app/*.config*)"
+    ]
+  }
+}
