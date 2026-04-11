@@ -9,8 +9,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
       manifest: {
-        name: 'Fasting & Gym',
-        short_name: 'Fasting',
+        name: 'Health App',
+        short_name: 'Health',
         description: 'Track fasts and gym workouts',
         theme_color: '#0a0a0a',
         background_color: '#0a0a0a',
@@ -19,6 +19,7 @@ export default defineConfig({
         start_url: '/',
         scope: '/',
         icons: [
+          { src: 'favicon.svg', sizes: 'any', type: 'image/svg+xml' },
           { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' },
           { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png' },
           { src: 'pwa-512x512-maskable.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },

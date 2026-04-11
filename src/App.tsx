@@ -118,20 +118,6 @@ export default function App() {
       </button>
       </div>
 
-      {activeTab === 'timer' && (
-        <div
-          className="fixed inset-x-0 z-30 flex justify-center px-4"
-          style={{ bottom: 'calc(env(safe-area-inset-bottom) + 6rem)' }}
-        >
-          <button
-            onClick={signOut}
-            className="rounded-full bg-card px-4 py-2 text-xs font-medium text-muted shadow-lg border border-card-border transition-colors hover:text-fg"
-          >
-            Sign out
-          </button>
-        </div>
-      )}
-
       <main
         className="mx-auto max-w-lg px-4"
         style={{
@@ -148,6 +134,16 @@ export default function App() {
             transition={{ duration: 0.15 }}
           >
             {tabs[activeTab]}
+            {activeTab === 'timer' && (
+              <div className="mt-8 flex justify-center">
+                <button
+                  onClick={signOut}
+                  className="rounded-full bg-card px-4 py-2 text-xs font-medium text-muted shadow-lg border border-card-border transition-colors hover:text-fg"
+                >
+                  Sign out
+                </button>
+              </div>
+            )}
           </motion.div>
         </AnimatePresence>
       </main>
