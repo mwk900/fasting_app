@@ -1,24 +1,9 @@
 import { useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useGymSession } from '../../lib/gymSession'
-import type { WorkoutType } from '../../types'
-
-const LABELS: Record<WorkoutType, string> = {
-  push: 'Push',
-  pull: 'Pull',
-  legs: 'Legs',
-  cardio: 'Cardio',
-}
-
-const COLORS: Record<WorkoutType, string> = {
-  push: '#f97316',
-  pull: '#8b5cf6',
-  legs: '#22c55e',
-  cardio: '#06b6d4',
-}
 
 export default function GymIsland({ onOpen, hidden }: { onOpen: () => void; hidden?: boolean }) {
-  const { activeSession } = useGymSession()
+  const { activeSession, categories } = useGymSession()
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
@@ -41,8 +26,9 @@ export default function GymIsland({ onOpen, hidden }: { onOpen: () => void; hidd
     timeStr = h > 0
       ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
       : `${m}:${String(s).padStart(2, '0')}`
-    label = LABELS[activeSession.workoutType] ?? 'Workout'
-    color = COLORS[activeSession.workoutType] ?? '#f97316'
+    const cat = categories.find((c) => c.key === activeSession.workoutType)
+    label = cat?.label ?? 'Workout'
+    color = cat?.color ?? '#f97316'
   }
 
   return (

@@ -6,7 +6,8 @@ import { useAuth } from '../../lib/auth'
 import { useGymSession } from '../../lib/gymSession'
 import GymProgress from './GymProgress'
 import DateInput from '../DateInput'
-import type { Exercise, WorkoutSession, WorkoutType } from '../../types'
+import type { Exercise, WorkoutCategory, WorkoutSession, WorkoutType } from '../../types'
+import { createCategory, updateCategory, deleteCategory, CATEGORY_PALETTE } from '../../lib/workoutCategories'
 
 /* ─── Local types ─────────────────────────────────────────────────── */
 
@@ -25,19 +26,16 @@ interface DetailSet {
   exercises: { name: string } | null
 }
 
-type Screen = 'select' | 'manage' | 'workout' | 'cardio' | 'complete' | 'progress' | 'detail'
+type Screen = 'select' | 'manage' | 'categories' | 'workout' | 'cardio' | 'complete' | 'progress' | 'detail'
 
-/* ─── Constants ───────────────────────────────────────────────────── */
+/* ─── Fallback meta for deleted / unknown category keys ──────────── */
 
-const WORKOUT_META: Record<WorkoutType, { label: string; desc: string; color: string }> = {
-  push: { label: 'Push', desc: 'Chest, shoulders, triceps', color: '#f97316' },
-  pull: { label: 'Pull', desc: 'Back, biceps, rear delts', color: '#8b5cf6' },
-  legs: { label: 'Legs', desc: 'Quads, hamstrings, glutes, calves', color: '#22c55e' },
-  cardio: { label: 'Cardio', desc: 'Running, cycling, swimming', color: '#06b6d4' },
+const FALLBACK_META = { label: 'Workout', desc: '', color: '#6b7280' }
+
+function metaFromCategory(c: WorkoutCategory | undefined) {
+  if (!c) return FALLBACK_META
+  return { label: c.label, desc: c.description ?? '', color: c.color }
 }
-
-const STRENGTH_TYPES: WorkoutType[] = ['push', 'pull', 'legs']
-const ALL_TYPES: WorkoutType[] = ['push', 'pull', 'legs', 'cardio']
 
 /* ─── Weight input (supports BW + decimals) ──────────────────────── */
 
@@ -97,7 +95,17 @@ interface PersistedWorkoutState {
 
 export default function GymTab() {
   const { user } = useAuth()
-  const { setActiveSession } = useGymSession()
+  const { setActiveSession, categories, setCategories } = useGymSession()
+
+  /* Derived category helpers */
+  const categoryByKey: Record<string, WorkoutCategory> = {}
+  for (const c of categories) categoryByKey[c.key] = c
+  const strengthCategories = categories.filter((c) => !c.is_cardio)
+  const cardioCategory = categories.find((c) => c.is_cardio)
+  const cardioKey = cardioCategory?.key ?? 'cardio'
+  const allKeys = categories.map((c) => c.key)
+  const metaFor = (key: WorkoutType) => metaFromCategory(categoryByKey[key])
+  const isCardioKey = (key: WorkoutType) => categoryByKey[key]?.is_cardio === true || key === cardioKey
 
   /* Navigation */
   const [screen, setScreen] = useState<Screen>('select')
@@ -105,12 +113,20 @@ export default function GymTab() {
   const [selectedType, setSelectedType] = useState<WorkoutType>('push')
 
   /* Data */
-  const [exercises, setExercises] = useState<Record<WorkoutType, Exercise[]>>({
-    push: [], pull: [], legs: [], cardio: [],
-  })
-  const [lastSessions, setLastSessions] = useState<Record<WorkoutType, WorkoutSession | null>>({
-    push: null, pull: null, legs: null, cardio: null,
-  })
+  const [exercises, setExercises] = useState<Record<string, Exercise[]>>({})
+  const [lastSessions, setLastSessions] = useState<Record<string, WorkoutSession | null>>({})
+
+  /* Category editor state */
+  const [catEditError, setCatEditError] = useState<string | null>(null)
+  const [newCatLabel, setNewCatLabel] = useState('')
+  const [newCatDesc, setNewCatDesc] = useState('')
+  const [newCatColor, setNewCatColor] = useState(CATEGORY_PALETTE[0])
+  const [addingCat, setAddingCat] = useState(false)
+  const [deletingCatId, setDeletingCatId] = useState<string | null>(null)
+  const [editingCatId, setEditingCatId] = useState<string | null>(null)
+  const [editCatLabel, setEditCatLabel] = useState('')
+  const [editCatDesc, setEditCatDesc] = useState('')
+  const [editCatColor, setEditCatColor] = useState(CATEGORY_PALETTE[0])
   const [recentWorkouts, setRecentWorkouts] = useState<WorkoutSession[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -156,10 +172,15 @@ export default function GymTab() {
   useEffect(() => {
     if (user) {
       fetchExercises()
-      fetchLastSessions()
       fetchRecentWorkouts()
     }
   }, [user])
+
+  useEffect(() => {
+    if (user && categories.length > 0) {
+      fetchLastSessions()
+    }
+  }, [user, categories.length])
 
   /* Rehydrate in-progress workout from localStorage once exercises load */
   useEffect(() => {
@@ -200,7 +221,7 @@ export default function GymTab() {
   useEffect(() => {
     if (!hydrated) return
     if ((screen !== 'workout' && screen !== 'complete') || !sessionId || !workoutStart) return
-    if (selectedType === 'cardio') return
+    if (isCardioKey(selectedType)) return
     const state: PersistedWorkoutState = {
       sessionId,
       selectedType,
@@ -226,17 +247,20 @@ export default function GymTab() {
 
     if (err) { setError('Failed to load exercises'); setLoading(false); return }
 
-    const grouped: Record<WorkoutType, Exercise[]> = { push: [], pull: [], legs: [], cardio: [] }
+    const grouped: Record<string, Exercise[]> = {}
     for (const ex of data ?? []) {
-      grouped[ex.workout_type as WorkoutType]?.push(ex)
+      const key = ex.workout_type as string
+      if (!grouped[key]) grouped[key] = []
+      grouped[key].push(ex)
     }
     setExercises(grouped)
     setLoading(false)
   }
 
   async function fetchLastSessions() {
-    const result: Record<WorkoutType, WorkoutSession | null> = { push: null, pull: null, legs: null, cardio: null }
-    const promises = ALL_TYPES.map(async (type) => {
+    if (allKeys.length === 0) return
+    const result: Record<string, WorkoutSession | null> = {}
+    const promises = allKeys.map(async (type) => {
       const { data } = await supabase
         .from('workout_sessions')
         .select('*')
@@ -267,13 +291,13 @@ export default function GymTab() {
   async function addExercise(e: React.FormEvent) {
     e.preventDefault()
     if (!newExName.trim()) return
-    const duplicate = exercises[selectedType].some(
+    const duplicate = (exercises[selectedType] ?? []).some(
       (ex) => ex.name.toLowerCase() === newExName.trim().toLowerCase(),
     )
     if (duplicate) { setError('Exercise already exists'); return }
     setSavingEx(true)
     setError(null)
-    const list = exercises[selectedType]
+    const list = exercises[selectedType] ?? []
     const maxOrder = list.length > 0 ? Math.max(...list.map((x) => x.sort_order)) + 1 : 0
     const { error: err } = await supabase.from('exercises').insert({
       user_id: user!.id,
@@ -281,7 +305,12 @@ export default function GymTab() {
       workout_type: selectedType,
       sort_order: maxOrder,
     })
-    if (err) { setError('Failed to add exercise'); setSavingEx(false); return }
+    if (err) {
+      console.error('addExercise failed', err)
+      setError(`Failed to add exercise: ${err.message}`)
+      setSavingEx(false)
+      return
+    }
     setNewExName('')
     setSavingEx(false)
     fetchExercises()
@@ -296,7 +325,7 @@ export default function GymTab() {
   }
 
   async function moveExercise(id: number, direction: 'up' | 'down') {
-    const list = [...exercises[selectedType]]
+    const list = [...(exercises[selectedType] ?? [])]
     const idx = list.findIndex((x) => x.id === id)
     if (idx < 0) return
     const swapIdx = direction === 'up' ? idx - 1 : idx + 1
@@ -313,7 +342,7 @@ export default function GymTab() {
   /* ─── Workout flow ─────────────────────────────────────────────── */
 
   async function startWorkout(type: WorkoutType) {
-    const exList = exercises[type]
+    const exList = exercises[type] ?? []
     if (exList.length === 0) {
       setSelectedType(type)
       setScreen('manage')
@@ -392,7 +421,7 @@ export default function GymTab() {
   }
 
   function currentExercise(): Exercise | null {
-    return exercises[selectedType][exIndex] ?? null
+    return (exercises[selectedType] ?? [])[exIndex] ?? null
   }
 
   function currentSets(): LocalSet[] {
@@ -443,13 +472,13 @@ export default function GymTab() {
   async function addExerciseMidWorkout(e: React.FormEvent) {
     e.preventDefault()
     if (!midWorkoutExName.trim() || savingEx) return
-    const duplicate = exercises[selectedType].some(
+    const duplicate = (exercises[selectedType] ?? []).some(
       (ex) => ex.name.toLowerCase() === midWorkoutExName.trim().toLowerCase(),
     )
     if (duplicate) { setError('Exercise already exists'); return }
     setSavingEx(true)
     setError(null)
-    const list = exercises[selectedType]
+    const list = exercises[selectedType] ?? []
     const insertIdx = exIndex + 1 // insert right after current exercise
     const currentSortOrder = list[exIndex]?.sort_order ?? 0
 
@@ -505,7 +534,7 @@ export default function GymTab() {
   }
 
   async function deleteExerciseMidWorkout(exId: number) {
-    const exList = exercises[selectedType]
+    const exList = exercises[selectedType] ?? []
     const delIdx = exList.findIndex((e) => e.id === exId)
     if (delIdx < 0) return
     setError(null)
@@ -563,7 +592,7 @@ export default function GymTab() {
         }))
       )
     }
-    const exList = exercises[selectedType]
+    const exList = exercises[selectedType] ?? []
     if (exIndex < exList.length - 1) {
       setAnimDir('next')
       setExIndex((i) => i + 1)
@@ -588,7 +617,7 @@ export default function GymTab() {
       await supabase.from('workout_sets').delete().eq('session_id', sessionId).eq('exercise_id', ex.id)
     }
     setSessionSets((prev) => { const next = { ...prev }; delete next[ex.id]; return next })
-    const exList = exercises[selectedType]
+    const exList = exercises[selectedType] ?? []
     if (exIndex < exList.length - 1) {
       setAnimDir('next')
       setExIndex((i) => i + 1)
@@ -606,7 +635,7 @@ export default function GymTab() {
   function goBack() {
     if (exIndex <= 0) return
     setAnimDir('prev')
-    const prevEx = exercises[selectedType][exIndex - 1]
+    const prevEx = (exercises[selectedType] ?? [])[exIndex - 1]
     if (prevEx && skippedExercises.has(prevEx.id)) {
       // Un-skip: remove from skipped set and restore sets from previous data or default
       setSkippedExercises((prev) => { const next = new Set(prev); next.delete(prevEx.id); return next })
@@ -661,7 +690,7 @@ export default function GymTab() {
         .update({ completed_at: null })
         .eq('id', sessionId)
     }
-    const exList = exercises[selectedType]
+    const exList = exercises[selectedType] ?? []
     setExIndex(exList.length - 1)
     setAnimDir('prev')
     setScreen('workout')
@@ -678,7 +707,7 @@ export default function GymTab() {
   /* ─── Cardio flow ──────────────────────────────────────────────── */
 
   function startCardio() {
-    setSelectedType('cardio')
+    setSelectedType(cardioKey)
     setCardioDistance(''); setCardioMinutes(''); setCardioFeel('')
     setCardioFasted(false); setWorkoutNotes(''); setWorkoutStart(new Date())
     setWorkoutDate(format(new Date(), 'yyyy-MM-dd'))
@@ -691,7 +720,7 @@ export default function GymTab() {
     const { data: session, error: err } = await supabase
       .from('workout_sessions')
       .insert({
-        user_id: user!.id, workout_type: 'cardio' as WorkoutType,
+        user_id: user!.id, workout_type: cardioKey,
         is_fasted: cardioFasted,
         distance_km: cardioDistance ? parseFloat(cardioDistance) : null,
         duration_minutes: cardioMinutes ? parseFloat(cardioMinutes) : null,
@@ -712,7 +741,7 @@ export default function GymTab() {
 
   async function viewWorkoutDetail(session: WorkoutSession) {
     setDetailSession(session)
-    if (session.workout_type !== 'cardio') {
+    if (!isCardioKey(session.workout_type)) {
       const { data } = await supabase
         .from('workout_sets')
         .select('exercise_id, set_number, weight_kg, reps, exercises(name)')
@@ -815,8 +844,8 @@ export default function GymTab() {
      ═════════════════════════════════════════════════════════════════ */
 
   if (screen === 'detail' && detailSession) {
-    const meta = WORKOUT_META[detailSession.workout_type as WorkoutType]
-    const isCardio = detailSession.workout_type === 'cardio'
+    const meta = metaFor(detailSession.workout_type)
+    const isCardio = isCardioKey(detailSession.workout_type)
     const dur = detailSession.completed_at && detailSession.started_at
       ? Math.round((new Date(detailSession.completed_at).getTime() - new Date(detailSession.started_at).getTime()) / 60000)
       : null
@@ -944,12 +973,12 @@ export default function GymTab() {
 
         {/* Strength cards */}
         <div className="space-y-3">
-          {STRENGTH_TYPES.map((type, ti) => {
-            const meta = WORKOUT_META[type]
-            const exList = exercises[type]
-            const last = lastSessions[type]
+          {strengthCategories.map((cat, ti) => {
+            const meta = metaFromCategory(cat)
+            const exList = exercises[cat.key] ?? []
+            const last = lastSessions[cat.key] ?? null
             return (
-              <motion.div key={type} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+              <motion.div key={cat.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: ti * 0.08, duration: 0.25 }}
                 className="rounded-xl border bg-card p-4"
                 style={{ borderColor: 'var(--color-card-border)', borderLeftWidth: '3px', borderLeftColor: meta.color }}>
@@ -959,18 +988,18 @@ export default function GymTab() {
                     {exList.length} exercise{exList.length !== 1 ? 's' : ''}
                   </span>
                 </div>
-                <p className="mb-1 text-sm text-muted">{meta.desc}</p>
+                {meta.desc && <p className="mb-1 text-sm text-muted">{meta.desc}</p>}
                 {last?.completed_at && (
                   <p className="mb-3 text-xs text-dim">Last: {formatDistanceToNow(parseISO(last.completed_at), { addSuffix: true })}</p>
                 )}
                 {!last && <div className="mb-3" />}
                 <div className="flex gap-2">
-                  <button onClick={() => startWorkout(type)}
+                  <button onClick={() => startWorkout(cat.key)}
                     className="flex-1 rounded-lg py-2.5 text-sm font-semibold transition-opacity hover:opacity-90"
                     style={{ backgroundColor: meta.color + '18', color: meta.color }}>
                     {exList.length > 0 ? 'Start Workout' : 'Add Exercises'}
                   </button>
-                  <button onClick={() => { setSelectedType(type); setDeletingExId(null); setNewExName(''); setScreen('manage') }}
+                  <button onClick={() => { setSelectedType(cat.key); setDeletingExId(null); setNewExName(''); setScreen('manage') }}
                     className="rounded-lg border border-card-border px-4 py-2.5 text-sm text-muted transition-colors hover:text-fg">
                     Edit
                   </button>
@@ -980,18 +1009,18 @@ export default function GymTab() {
           })}
 
           {/* Cardio card */}
-          {(() => {
-            const meta = WORKOUT_META.cardio
-            const last = lastSessions.cardio
+          {cardioCategory && (() => {
+            const meta = metaFromCategory(cardioCategory)
+            const last = lastSessions[cardioCategory.key] ?? null
             return (
               <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.24, duration: 0.25 }}
+                transition={{ delay: strengthCategories.length * 0.08, duration: 0.25 }}
                 className="rounded-xl border bg-card p-4"
                 style={{ borderColor: 'var(--color-card-border)', borderLeftWidth: '3px', borderLeftColor: meta.color }}>
                 <div className="mb-2 flex items-center justify-between">
                   <h3 className="text-lg font-bold text-fg">{meta.label}</h3>
                 </div>
-                <p className="mb-1 text-sm text-muted">{meta.desc}</p>
+                {meta.desc && <p className="mb-1 text-sm text-muted">{meta.desc}</p>}
                 {last?.completed_at && (
                   <p className="mb-3 text-xs text-dim">Last: {formatDistanceToNow(parseISO(last.completed_at), { addSuffix: true })}</p>
                 )}
@@ -1004,6 +1033,18 @@ export default function GymTab() {
               </motion.div>
             )
           })()}
+
+          <button
+            onClick={() => { setCatEditError(null); setDeletingCatId(null); setEditingCatId(null); setScreen('categories') }}
+            className="flex w-full items-center justify-center gap-2 rounded-xl border border-card-border bg-card py-3 text-sm font-semibold text-muted transition-colors hover:text-fg"
+            aria-label="Adjust categories"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 20h9" />
+              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+            </svg>
+            Adjust Categories
+          </button>
         </div>
 
         {/* Recent Workouts */}
@@ -1022,7 +1063,7 @@ export default function GymTab() {
               </div>
               <div className="space-y-2">
                 {slice.map((session) => {
-                  const meta = WORKOUT_META[session.workout_type as WorkoutType]
+                  const meta = metaFor(session.workout_type)
                   const isDeleting = deletingSessionId === session.id
                   return (
                     <div key={session.id} className="rounded-xl border border-card-border bg-card px-4 py-3">
@@ -1075,12 +1116,196 @@ export default function GymTab() {
   }
 
   /* ═════════════════════════════════════════════════════════════════
+     MANAGE CATEGORIES SCREEN
+     ═════════════════════════════════════════════════════════════════ */
+
+  if (screen === 'categories') {
+    async function handleAdd() {
+      if (!user) return
+      const label = newCatLabel.trim()
+      if (!label) { setCatEditError('Name is required'); return }
+      setAddingCat(true)
+      setCatEditError(null)
+      try {
+        const maxOrder = categories.reduce((m, c) => Math.max(m, c.sort_order), -1)
+        const created = await createCategory(user.id, {
+          label,
+          description: newCatDesc.trim() || null,
+          color: newCatColor,
+          sort_order: maxOrder + 1,
+        })
+        setCategories([...categories, created].sort((a, b) => a.sort_order - b.sort_order))
+        setNewCatLabel('')
+        setNewCatDesc('')
+        setNewCatColor(CATEGORY_PALETTE[0])
+      } catch (e: any) {
+        setCatEditError(e?.message ?? 'Failed to add category')
+      } finally {
+        setAddingCat(false)
+      }
+    }
+
+    function startEdit(c: WorkoutCategory) {
+      setEditingCatId(c.id)
+      setEditCatLabel(c.label)
+      setEditCatDesc(c.description ?? '')
+      setEditCatColor(c.color)
+      setCatEditError(null)
+    }
+
+    async function handleSaveEdit(c: WorkoutCategory) {
+      const label = editCatLabel.trim()
+      if (!label) { setCatEditError('Name is required'); return }
+      setCatEditError(null)
+      try {
+        const updated = await updateCategory(c.id, {
+          label,
+          description: editCatDesc.trim() || null,
+          color: editCatColor,
+        })
+        setCategories(categories.map((x) => (x.id === c.id ? updated : x)))
+        setEditingCatId(null)
+      } catch (e: any) {
+        setCatEditError(e?.message ?? 'Failed to update')
+      }
+    }
+
+    async function handleDelete(c: WorkoutCategory) {
+      if (c.is_builtin) { setCatEditError('Built-in categories cannot be deleted'); return }
+      if (!confirm(`Delete "${c.label}"? Past workouts under this category will remain but lose their label.`)) return
+      setDeletingCatId(c.id)
+      setCatEditError(null)
+      try {
+        await deleteCategory(c.id)
+        setCategories(categories.filter((x) => x.id !== c.id))
+      } catch (e: any) {
+        setCatEditError(e?.message ?? 'Failed to delete')
+      } finally {
+        setDeletingCatId(null)
+      }
+    }
+
+    return (
+      <div>
+        <button onClick={() => { setScreen('select'); setCatEditError(null); setEditingCatId(null) }}
+          className="mb-4 flex items-center gap-1 text-sm text-muted transition-colors hover:text-fg">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+          Back
+        </button>
+
+        <h1 className="mb-1 text-xl font-bold text-fg">Workout Categories</h1>
+        <p className="mb-4 text-sm text-muted">Rename, recolor, or add your own split (e.g. Upper, Lower, Full Body).</p>
+
+        {catEditError && (
+          <div className="mb-3 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-500">{catEditError}</div>
+        )}
+
+        <div className="mb-6 space-y-2">
+          {categories.map((c) => {
+            const isEditing = editingCatId === c.id
+            if (isEditing) {
+              return (
+                <div key={c.id} className="rounded-xl border border-card-border bg-card p-3">
+                  <input
+                    value={editCatLabel}
+                    onChange={(e) => setEditCatLabel(e.target.value)}
+                    placeholder="Name"
+                    className="mb-2 w-full rounded-lg border border-card-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-teal"
+                  />
+                  <input
+                    value={editCatDesc}
+                    onChange={(e) => setEditCatDesc(e.target.value)}
+                    placeholder="Description (optional)"
+                    className="mb-2 w-full rounded-lg border border-card-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-teal"
+                  />
+                  <div className="mb-3 flex flex-wrap gap-2">
+                    {CATEGORY_PALETTE.map((col) => (
+                      <button key={col} onClick={() => setEditCatColor(col)}
+                        className={`h-7 w-7 rounded-full border-2 transition-transform ${editCatColor === col ? 'scale-110 border-fg' : 'border-transparent'}`}
+                        style={{ backgroundColor: col }}
+                        aria-label={`Color ${col}`}
+                      />
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => handleSaveEdit(c)}
+                      className="flex-1 rounded-lg bg-teal py-2 text-sm font-semibold text-bg hover:opacity-90">
+                      Save
+                    </button>
+                    <button onClick={() => { setEditingCatId(null); setCatEditError(null) }}
+                      className="flex-1 rounded-lg border border-card-border py-2 text-sm font-semibold text-fg hover:bg-card-border">
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )
+            }
+            return (
+              <div key={c.id} className="flex items-center gap-3 rounded-xl border border-card-border bg-card p-3">
+                <div className="h-10 w-10 flex-shrink-0 rounded-full" style={{ backgroundColor: c.color }} />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold text-fg">
+                    {c.label}
+                    {c.is_cardio && <span className="ml-2 text-[10px] font-medium uppercase tracking-wider text-dim">Cardio</span>}
+                    {c.is_builtin && !c.is_cardio && <span className="ml-2 text-[10px] font-medium uppercase tracking-wider text-dim">Default</span>}
+                  </p>
+                  {c.description && <p className="truncate text-xs text-muted">{c.description}</p>}
+                </div>
+                <button onClick={() => startEdit(c)}
+                  className="rounded-lg border border-card-border px-3 py-1.5 text-xs font-semibold text-fg hover:bg-card-border">
+                  Edit
+                </button>
+                {!c.is_builtin && (
+                  <button onClick={() => handleDelete(c)}
+                    disabled={deletingCatId === c.id}
+                    className="rounded-lg border border-red-500/30 px-3 py-1.5 text-xs font-semibold text-red-500 hover:bg-red-500/10 disabled:opacity-50">
+                    {deletingCatId === c.id ? '...' : 'Delete'}
+                  </button>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        <div className="rounded-xl border border-card-border bg-card p-4">
+          <h2 className="mb-3 text-sm font-semibold text-fg">Add Category</h2>
+          <input
+            value={newCatLabel}
+            onChange={(e) => setNewCatLabel(e.target.value)}
+            placeholder="e.g. Upper, Lower, Full Body"
+            className="mb-2 w-full rounded-lg border border-card-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-teal"
+          />
+          <input
+            value={newCatDesc}
+            onChange={(e) => setNewCatDesc(e.target.value)}
+            placeholder="Description (optional)"
+            className="mb-3 w-full rounded-lg border border-card-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-teal"
+          />
+          <div className="mb-3 flex flex-wrap gap-2">
+            {CATEGORY_PALETTE.map((col) => (
+              <button key={col} onClick={() => setNewCatColor(col)}
+                className={`h-7 w-7 rounded-full border-2 transition-transform ${newCatColor === col ? 'scale-110 border-fg' : 'border-transparent'}`}
+                style={{ backgroundColor: col }}
+                aria-label={`Color ${col}`}
+              />
+            ))}
+          </div>
+          <button onClick={handleAdd} disabled={addingCat || !newCatLabel.trim()}
+            className="w-full rounded-lg bg-teal py-2 text-sm font-semibold text-bg hover:opacity-90 disabled:opacity-50">
+            {addingCat ? 'Adding...' : 'Add Category'}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  /* ═════════════════════════════════════════════════════════════════
      MANAGE EXERCISES SCREEN
      ═════════════════════════════════════════════════════════════════ */
 
   if (screen === 'manage') {
-    const meta = WORKOUT_META[selectedType]
-    const exList = exercises[selectedType]
+    const meta = metaFor(selectedType)
+    const exList = exercises[selectedType] ?? []
     return (
       <div>
         <button onClick={() => { setScreen('select'); setError(null) }}
@@ -1141,7 +1366,7 @@ export default function GymTab() {
      ═════════════════════════════════════════════════════════════════ */
 
   if (screen === 'cardio') {
-    const meta = WORKOUT_META.cardio
+    const meta = metaFromCategory(cardioCategory)
     return (
       <div>
         <div className="mb-3 flex items-center justify-between">
@@ -1201,8 +1426,8 @@ export default function GymTab() {
      ═════════════════════════════════════════════════════════════════ */
 
   if (screen === 'workout') {
-    const meta = WORKOUT_META[selectedType]
-    const exList = exercises[selectedType]
+    const meta = metaFor(selectedType)
+    const exList = exercises[selectedType] ?? []
     const ex = currentExercise()
     const sets = currentSets()
     const prevStr = ex ? formatPrevSets(ex.id) : ''
@@ -1450,8 +1675,8 @@ export default function GymTab() {
      ═════════════════════════════════════════════════════════════════ */
 
   if (screen === 'complete') {
-    const meta = WORKOUT_META[selectedType]
-    const isCardio = selectedType === 'cardio'
+    const meta = metaFor(selectedType)
+    const isCardio = isCardioKey(selectedType)
 
     if (isCardio) {
       return (
@@ -1507,7 +1732,7 @@ export default function GymTab() {
     }
 
     // Strength workout complete
-    const exList = exercises[selectedType]
+    const exList = exercises[selectedType] ?? []
     const totalVolume = calcVolume(sessionSets)
     const prevTotalVolume = Object.keys(prevSets).length > 0
       ? Object.values(prevSets).flat().reduce((sum, s) => sum + Math.max(0, s.weight_kg) * s.reps, 0) : 0

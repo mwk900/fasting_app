@@ -37,7 +37,20 @@ export interface Measurement {
   created_at: string
 }
 
-export type WorkoutType = 'push' | 'pull' | 'legs' | 'cardio'
+export type WorkoutType = string
+
+export interface WorkoutCategory {
+  id: string
+  user_id: string
+  key: string
+  label: string
+  description: string | null
+  color: string
+  sort_order: number
+  is_cardio: boolean
+  is_builtin: boolean
+  created_at: string
+}
 
 export interface Exercise {
   id: number

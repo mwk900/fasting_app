@@ -6,6 +6,7 @@ import {
 } from 'recharts'
 import { supabase } from '../../lib/supabase'
 import type { WorkoutType } from '../../types'
+import { useGymSession } from '../../lib/gymSession'
 
 /* ─── Types ───────────────────────────────────────────────────────── */
 
@@ -24,20 +25,25 @@ interface Props {
   onBack: () => void
 }
 
-const STRENGTH_TYPES: WorkoutType[] = ['push', 'pull', 'legs']
-
-const TYPE_COLORS: Record<string, string> = {
-  push: '#f97316', pull: '#8b5cf6', legs: '#22c55e',
-}
-
-const TYPE_LABELS: Record<string, string> = {
-  push: 'Push', pull: 'Pull', legs: 'Legs',
-}
-
 /* ─── Component ───────────────────────────────────────────────────── */
 
 export default function GymProgress({ userId, onBack }: Props) {
-  const [type, setType] = useState<WorkoutType>('push')
+  const { categories } = useGymSession()
+  const strengthCategories = categories.filter((c) => !c.is_cardio)
+  const TYPE_COLORS: Record<string, string> = {}
+  const TYPE_LABELS: Record<string, string> = {}
+  for (const c of strengthCategories) {
+    TYPE_COLORS[c.key] = c.color
+    TYPE_LABELS[c.key] = c.label
+  }
+  const [type, setType] = useState<WorkoutType>(strengthCategories[0]?.key ?? 'push')
+
+  useEffect(() => {
+    if (strengthCategories.length > 0 && !strengthCategories.some((c) => c.key === type)) {
+      setType(strengthCategories[0].key)
+    }
+
+  }, [strengthCategories.map((c) => c.key).join(',')])
   const [exercises, setExercises] = useState<ProgressExercise[]>([])
   const [volumeTrend, setVolumeTrend] = useState<{ date: string; fullDate: string; volume: number }[]>([])
   const [totalWorkouts, setTotalWorkouts] = useState(0)
@@ -151,7 +157,9 @@ export default function GymProgress({ userId, onBack }: Props) {
 
       {/* Type tabs */}
       <div className="mb-6 flex gap-2">
-        {STRENGTH_TYPES.map((t) => (
+        {strengthCategories.map((cat) => {
+          const t = cat.key
+          return (
           <button key={t} onClick={() => setType(t)}
             className={`flex-1 rounded-lg py-2 text-sm font-semibold transition-colors ${
               type === t ? 'text-bg' : 'border border-card-border text-secondary hover:text-fg'
@@ -159,7 +167,8 @@ export default function GymProgress({ userId, onBack }: Props) {
             style={type === t ? { backgroundColor: TYPE_COLORS[t] } : undefined}>
             {TYPE_LABELS[t]}
           </button>
-        ))}
+          )
+        })}
       </div>
 
       {loading ? (
